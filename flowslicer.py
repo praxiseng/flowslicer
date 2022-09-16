@@ -118,6 +118,15 @@ class DataNode:
     def get_txt(self):
         opname = type(self.il_expr).__name__
         optxt = '?'
+
+
+        match self.operation:
+            case DataFlowILOperation.DFIL_CALL:
+                call_target = self.operands[0].get_txt()
+                call_operands = ",".join(operand.get_txt() for operand in self.operands[1:])
+                return f'{self.node_id}:{call_target}({call_operands})'
+
+
         match self.il_expr:
             case int():
                 return f'{self.node_id}:{hex(self.il_expr)}'
@@ -127,6 +136,7 @@ class DataNode:
                 return f'{self.node_id}:{ssa.var.name}#{ssa.version}'
             case highlevelil.HighLevelILVarSsa(var=ssa):
                 return f'{self.node_id}:{ssa.var.name}#{ssa.version}'
+
             case _:
                 optxt = ",".join([child_node.get_txt() for child_node in self.operands])
                 operation_txt = f'{self.operation.name if self.operation else opname}({optxt})'
@@ -135,13 +145,9 @@ class DataNode:
                 return f'{self.node_id}:{operation_txt}'
 
     def get_operation_txt(self):
-        if self.operation == DataFlowILOperation.DFIL_UNKNOWN and \
-           isinstance(self.il_expr, highlevelil.HighLevelILInstruction):
+        if self.operation == DataFlowILOperation.DFIL_UNKNOWN:
             return type(self.il_expr).__name__
-
         return self.operation.name
-
-
 
     def get_token_text(self):
         match self.il_expr:
@@ -160,29 +166,31 @@ class DataNode:
                 return f'Unknown expr {self.il_expr}'
 
     def get_token_list(self):
+        match self.operation:
+            case DataFlowILOperation.DFIL_CALL:
+                call_target = self.operands[0]
+                call_operands = self.operands[1:]
+                txt_tokens = [call_target, '(']
+                for idx, operand in enumerate(self.operands[1:]):
+                    if idx:
+                        txt_tokens.append(',')
+                    txt_tokens.append(operand)
+                txt_tokens.append(')')
+                return txt_tokens
+
         txt_tokens = self.get_token_text()
+        # Hack-in the subexpressions by trying to find sub-lists of tokens
+        for operand in self.operands:
+            operand_tokens = operand.get_token_text()
+            len_t = len(operand_tokens)
+            for i in range(0, len(txt_tokens)-len_t+1):
+                if all(txt_tokens[i+j]==operand_tokens[j] for j in range(len_t)):
+                    txt_tokens[i:i+len_t] = [operand]
+                    break
+            else:
+                txt_tokens.append(operand)
 
-        match self.il_expr:
-            case highlevelil.HighLevelILInstruction():
-                #for operand in self.operands:
-                #    operand_tokens = operand.get_token_text()
-                #    print(f'    Operand tokens: {operand_tokens}')
-                for operand in self.operands:
-                    operand_tokens = operand.get_token_text()
-                    #print(f'Hello {txt_tokens}    {operand_tokens}')
-                    len_t = len(operand_tokens)
-                    for i in range(0, len(txt_tokens)-len_t+1):
-                        if all(txt_tokens[i+j]==operand_tokens[j] for j in range(len_t)):
-                            #print(f'Found {txt_tokens} {operand_tokens} {i}')
-                            txt_tokens[i:i+len_t] = [operand]
-                            #print(f'Modified list: {txt_tokens}')
-                            break
-
-                #print(f'Made {txt_tokens}')
-                return txt_tokens
-
-            case _:
-                return txt_tokens
+        return txt_tokens
 
     def format_tokens(self):
         tokens = self.get_token_list()
@@ -201,9 +209,7 @@ class DataNode:
         print(f'    {self.node_id:2} {self.base_instr.instr_index:2} {optxt:20}  {self.format_tokens()}')
 
 
-class DataExpression:
-    def __init__(self):
-        pass
+
 
 
 class ILParser:
@@ -254,14 +260,14 @@ class ILParser:
                 return self._node(expr, operands, [])
             case highlevelil.HighLevelILCallSsa() as call_ssa:
                 dest, params, dest_mem, src_mem = expr.operands
-                operands = [self._recurse(operand) for operand in params]
+                operands = [self._recurse(operand) for operand in [dest] + params]
                 # TODO: unpack multi-value outputs
                 return self._node(expr, operands, [])
             case highlevelil.HighLevelILMemPhi() | highlevelil.HighLevelILVarDeclare():
                 pass
             case SSAVariable() as ssa:
                 return self._var(expr, ssa)
-            case commonil.BaseILInstruction():
+            case commonil.BaseILInstruction() as instr:
                 operands = [self._recurse(operand) for operand in expr.operands]
                 return self._node(expr, operands, [])
             #case highlevelil.HighLevelILCallSsa() as call_ssa:

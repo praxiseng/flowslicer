@@ -154,6 +154,11 @@ class ILParser:
 
         return dn
 
+    def _unimplemented(self, expr):
+        node_id = self.next_node_id
+        self.next_node_id += 1
+        return DataNode(self.current_base_instr, expr, [], node_id, DataFlowILOperation.DFIL_UNKNOWN)
+
     def _var(self, var):
         if var in self.varnodes:
             return self.varnodes[var]
@@ -167,8 +172,9 @@ class ILParser:
     def _recurse(self, expr):
         match expr:
             case commonil.Constant():
+                print(f'Constant {expr.constant}')
                 node = self._var(expr.constant)
-            case int():
+            case int() | float():
                 node = self._var(expr)
             case binaryninja.variable.Variable() as var:
                 node = self._var(var)
@@ -180,12 +186,20 @@ class ILParser:
             case highlevelil.HighLevelILVarInitSsa() as var_ssa:
                 operands = [self._recurse(var_ssa.src)]
                 node = self._node(expr, operands, var_ssa.dest)
+            case highlevelil.HighLevelILVarInit():
+                operands = [self._recurse(expr.src)]
+                node = self._node(expr, operands, expr.dest)
             case highlevelil.HighLevelILCallSsa():
                 dest, params, dest_mem, src_mem = expr.operands
                 operands = [self._recurse(operand) for operand in [dest] + params]
                 node = self._node(expr, operands)
             case highlevelil.HighLevelILArrayIndexSsa():
                 operands = [self._recurse(operand) for operand in [expr.src, expr.index]]
+                node = self._node(expr, operands)
+            case highlevelil.HighLevelILStructField():
+                # .member_index has been None
+                # TODO: consider unifying struct/array/deref under a generic GEP (a la LLVM) to unify dereferences.
+                operands = [self._recurse(operand) for operand in [expr.src, expr.offset]]
                 node = self._node(expr, operands)
             case highlevelil.HighLevelILAssignMemSsa():
                 # Note that expr.dest tends to contain the memory reference, not the HighLevelILAssignMemSsa.  expr.dest
@@ -197,7 +211,8 @@ class ILParser:
                 node = self._node(expr, operands, expr.dest)
             case highlevelil.HighLevelILDerefSsa():
                 node = self._node(expr, [self._recurse(expr.src)])
-            case highlevelil.HighLevelILMemPhi() | highlevelil.HighLevelILVarDeclare():
+            case highlevelil.HighLevelILMemPhi() | highlevelil.HighLevelILVarDeclare() | highlevelil.HighLevelILNoret():
+                # These will be at the highest level, so we don't need to worry about returning None as an operand
                 node = None
             case SSAVariable() as ssa:
                 node = self._var(ssa)
@@ -206,7 +221,7 @@ class ILParser:
                 node = self._node(expr, operands)
             case _:
                 print(f'Type not handled: {type(expr)} for {expr}')
-                node = None
+                node = self._unimplemented(expr)
                 # node = self._node(expr, [])
 
         return node
@@ -283,6 +298,6 @@ def analyze_function(bv: binaryninja.BinaryView,
     test_node = parser.data_blocks[0].data_nodes[0]
     display_node_tree(dfil_fx, test_node)
 
-    dfil_fx.graph_flows_from(test_node)
+    # dfil_fx.graph_flows_from(test_node)
 
     dfil_fx.graph()

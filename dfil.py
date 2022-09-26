@@ -42,16 +42,11 @@ class DataFlowILOperation(enum.Enum):
     DFIL_UNKNOWN = DataFlowOp(-1)
     DFIL_NOP = DataFlowOp(0)
     DFIL_BLOCK = DataFlowOp(1)
-    DFIL_ADD = DataFlowOp(2, infix_formatter('+'))
     DFIL_CALL = DataFlowOp(3, call_formatter())
     DFIL_DECLARE_CONST = DataFlowOp(4)
     DFIL_DECLARE_VAR = DataFlowOp(5)
     DFIL_PHI = DataFlowOp(6, prefix_formatter('\u03d5(', ',', ')'))
     DFIL_RET = DataFlowOp(7, prefix_formatter('ret '))
-    DFIL_CMP_E = DataFlowOp(8, infix_formatter('=='))
-    DFIL_CMP_NE = DataFlowOp(9, infix_formatter('!='))
-    DFIL_CMP_SGT = DataFlowOp(80)
-    DFIL_CMP_SLE = DataFlowOp(81)
     DFIL_ASSIGN = DataFlowOp(10, infix_formatter('=', use_paren=False))
     DFIL_INIT = DataFlowOp(11)
     DFIL_DEREF = DataFlowOp(12, prefix_formatter('#'))
@@ -61,11 +56,36 @@ class DataFlowILOperation(enum.Enum):
     DFIL_LOGIC_OR = DataFlowOp(16, infix_formatter('||'))
     DFIL_LOGIC_AND = DataFlowOp(17, infix_formatter('&&'))
     DFIL_SX = DataFlowOp(18)
-    DFIL_LSL = DataFlowOp(19, infix_formatter('<<'))
-    DFIL_SUB = DataFlowOp(20, infix_formatter('-'))
 
-    DFIL_ARRAY_INDEX = DataFlowOp(21, prefix_formatter('', '[', ']'))
-    DFIL_STORE = DataFlowOp(22, prefix_formatter('', '='))
+    DFIL_LSL = DataFlowOp(20, infix_formatter('<<'))
+    DFIL_LSR = DataFlowOp(21, infix_formatter('>>'))
+    DFIL_XOR = DataFlowOp(22, infix_formatter('^'))
+
+    DFIL_ADD = DataFlowOp(30, infix_formatter('+'))
+    DFIL_SUB = DataFlowOp(31, infix_formatter('-'))
+    DFIL_MUL = DataFlowOp(32, infix_formatter('*'))
+
+    DFIL_ARRAY_INDEX = DataFlowOp(40, prefix_formatter('', '[', ']'))
+    DFIL_STORE = DataFlowOp(41, prefix_formatter('', '='))
+    DFIL_STRUCT_FIELD = DataFlowOp(42, prefix_formatter('', '.'))
+
+    DFIL_CMP_E = DataFlowOp(80, infix_formatter('=='))
+    DFIL_CMP_NE = DataFlowOp(81, infix_formatter('!='))
+    DFIL_CMP_SGT = DataFlowOp(82, infix_formatter('s>'))
+    DFIL_CMP_SLE = DataFlowOp(83, infix_formatter('s<'))
+
+    DFIL_FSUB = DataFlowOp(50, infix_formatter('-'))
+    DFIL_FADD = DataFlowOp(51, infix_formatter('+'))
+    DFIL_FDIV = DataFlowOp(52, infix_formatter('/'))
+    DFIL_FMUL = DataFlowOp(53, infix_formatter('*'))
+
+    DFIL_FCONV = DataFlowOp(54, prefix_formatter('fconvert(', '', ')'))
+    DFIL_INT_TO_FLOAT = DataFlowOp(55, prefix_formatter('float.d(', '', ')'))
+    DFIL_FLOAT_TO_INT = DataFlowOp(55, prefix_formatter('int(', '', ')'))
+    DFIL_FTRUNC = DataFlowOp(56, prefix_formatter('ftrunc(', '', ')'))
+
+    DFIL_SPLIT = DataFlowOp(60, prefix_formatter('', ':'))
+    DFIL_ADDRESS_OF = DataFlowOp(61, prefix_formatter('&'))
 
     def format(self, operands: list[str]) -> str:
         if self.value.formatter:
@@ -77,14 +97,15 @@ globals().update(HlilOp.__members__)
 globals().update(DataFlowILOperation.__members__)
 
 hlil_to_dfil_operations = {
-    HlilOp.HLIL_ADD: DataFlowILOperation.DFIL_ADD,
     HlilOp.HLIL_CALL_SSA: DataFlowILOperation.DFIL_CALL,
     HlilOp.HLIL_VAR_PHI: DataFlowILOperation.DFIL_PHI,
     HlilOp.HLIL_RET: DataFlowILOperation.DFIL_RET,
-    HlilOp.HLIL_CMP_E: DataFlowILOperation.DFIL_CMP_E,
-    HlilOp.HLIL_CMP_NE: DataFlowILOperation.DFIL_CMP_NE,
+
     HlilOp.HLIL_ASSIGN: DataFlowILOperation.DFIL_ASSIGN,
     HlilOp.HLIL_VAR_INIT_SSA: DataFlowILOperation.DFIL_ASSIGN,
+    HlilOp.HLIL_VAR_INIT: DataFlowILOperation.DFIL_ASSIGN,
+    HlilOp.HLIL_VAR: DataFlowILOperation.DFIL_ASSIGN,
+
     HlilOp.HLIL_DEREF_SSA: DataFlowILOperation.DFIL_DEREF,
     HlilOp.HLIL_IF: DataFlowILOperation.DFIL_IF,
     HlilOp.HLIL_ZX: DataFlowILOperation.DFIL_ZX,
@@ -92,18 +113,46 @@ hlil_to_dfil_operations = {
     HlilOp.HLIL_OR: DataFlowILOperation.DFIL_LOGIC_OR,
     HlilOp.HLIL_AND: DataFlowILOperation.DFIL_LOGIC_AND,
     HlilOp.HLIL_SX: DataFlowILOperation.DFIL_SX,
+
     HlilOp.HLIL_LSL: DataFlowILOperation.DFIL_LSL,
+    HlilOp.HLIL_LSR: DataFlowILOperation.DFIL_LSR,
+    HlilOp.HLIL_XOR: DataFlowILOperation.DFIL_XOR,
+
+    HlilOp.HLIL_ADD: DataFlowILOperation.DFIL_ADD,
     HlilOp.HLIL_SUB: DataFlowILOperation.DFIL_SUB,
+    HlilOp.HLIL_MUL: DataFlowILOperation.DFIL_MUL,
+    HlilOp.HLIL_MULU_DP: DataFlowILOperation.DFIL_MUL,
+
     HlilOp.HLIL_ARRAY_INDEX_SSA: DataFlowILOperation.DFIL_ARRAY_INDEX,
     HlilOp.HLIL_ASSIGN_MEM_SSA: DataFlowILOperation.DFIL_STORE,
+    HlilOp.HLIL_STRUCT_FIELD: DataFlowILOperation.DFIL_STRUCT_FIELD,
+
+    HlilOp.HLIL_CMP_E: DataFlowILOperation.DFIL_CMP_E,
+    HlilOp.HLIL_CMP_NE: DataFlowILOperation.DFIL_CMP_NE,
     HlilOp.HLIL_CMP_SGT: DataFlowILOperation.DFIL_CMP_SGT,
     HlilOp.HLIL_CMP_SLE: DataFlowILOperation.DFIL_CMP_SLE,
+
+    HlilOp.HLIL_FSUB: DataFlowILOperation.DFIL_FSUB,
+    HlilOp.HLIL_FADD: DataFlowILOperation.DFIL_FSUB,
+    HlilOp.HLIL_FDIV: DataFlowILOperation.DFIL_FDIV,
+    HlilOp.HLIL_FMUL: DataFlowILOperation.DFIL_FMUL,
+    HlilOp.HLIL_FLOAT_CONV: DataFlowILOperation.DFIL_FCONV,
+    HlilOp.HLIL_INT_TO_FLOAT: DataFlowILOperation.DFIL_INT_TO_FLOAT,
+    HlilOp.HLIL_FLOAT_TO_INT: DataFlowILOperation.DFIL_FLOAT_TO_INT,
+
+    HlilOp.HLIL_FTRUNC: DataFlowILOperation.DFIL_FTRUNC,
+
+    # TODO: need to distinguish multiple output flow direction
+    HlilOp.HLIL_SPLIT: DataFlowILOperation.DFIL_SPLIT,
+    HlilOp.HLIL_ADDRESS_OF: DataFlowILOperation.DFIL_ADDRESS_OF,
+
+
 }
 
 
 def get_dfil_op(expr):
     match expr:
-        case binaryninja.commonil.Constant() | int():
+        case binaryninja.commonil.Constant() | int() | float():
             return DataFlowILOperation.DFIL_DECLARE_CONST
         case binaryninja.SSAVariable():
             return DataFlowILOperation.DFIL_DECLARE_VAR
@@ -122,6 +171,9 @@ class DataNode:
     node_id: int
     operation: DataFlowILOperation
 
+    def __post_init__(self):
+        assert(all(self.operands))
+
     def get_operation_txt(self):
         if self.operation == DataFlowILOperation.DFIL_UNKNOWN:
             return type(self.il_expr).__name__
@@ -137,6 +189,8 @@ class DataNode:
 
     def get_const_var_txt(self):
         match self.il_expr:
+            case float():
+                return f'float({self.il_expr})'
             case int():
                 return hex(self.il_expr)
             case binaryninja.variable.Variable() as var:

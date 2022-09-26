@@ -2,7 +2,6 @@
 from collections import defaultdict
 from binaryninja.mediumlevelil import SSAVariable
 from binaryninja import flowgraph, BranchType
-
 from .dfil import *
 
 

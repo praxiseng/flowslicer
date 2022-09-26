@@ -4,7 +4,6 @@ import enum
 from binaryninja import commonil, highlevelil
 from dataclasses import dataclass
 from binaryninja.enums import HighLevelILOperation as HlilOp
-
 from typing import Union, Callable, Optional
 
 

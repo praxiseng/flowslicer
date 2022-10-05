@@ -15,9 +15,16 @@ class DataFlowILFunction:
         self.control_edges = control_edges
 
         self.all_nodes = {}
+        self.nodes_by_il = {}
+        self.vars_to_nodes = {}
         for bb in basic_blocks:
             for dn in bb.data_nodes:
                 self.all_nodes[dn.node_id] = dn
+                match dn.il_expr:
+                    case commonil.BaseILInstruction():
+                        self.nodes_by_il[dn.il_expr.instr_index] = dn
+                    case binaryninja.SSAVariable() as ssa:
+                        self.vars_to_nodes[repr(dn.il_expr)] = dn
 
         self.in_edges = defaultdict(list)
         self.out_edges = defaultdict(list)
@@ -25,6 +32,7 @@ class DataFlowILFunction:
             a, b = edge.in_node, edge.out_node
             self.out_edges[a.node_id].append(edge)
             self.in_edges[b.node_id].append(edge)
+
 
     def graph(self):
         g = flowgraph.FlowGraph()
@@ -171,7 +179,7 @@ class ILParser:
     def _recurse(self, expr):
         match expr:
             case commonil.Constant():
-                print(f'Constant {expr.constant}')
+                #print(f'Constant {expr.constant}')
                 node = self._var(expr.constant)
             case int() | float():
                 node = self._var(expr)
@@ -284,10 +292,6 @@ def print_dfil(dfil_fx : DataFlowILFunction):
 
 def analyze_function(bv: binaryninja.BinaryView,
                      fx: binaryninja.Function):
-    print('Hello, world!')
-    print(f'bv={bv}')
-    print(f'fx={fx}')
-
     parser = ILParser()
     dfil_fx = parser.parse(fx.hlil.ssa_form)
 
@@ -306,8 +310,35 @@ def analyze_function(bv: binaryninja.BinaryView,
 
     dfil_fx.graph()
 
-
-
+import binaryninjaui
 def analyze_hlil_instruction(bv: binaryninja.BinaryView,
-                            instr: highlevelil.HighLevelILInstruction):
-    print(f'Analyze instr {instr.ssa_form}')
+                             instr: highlevelil.HighLevelILInstruction):
+    ssa = instr.ssa_form
+
+    parser = ILParser()
+    dfil_fx = parser.parse(ssa.function.ssa_form)
+    dfil_node : DataNode = None
+
+    ctx = binaryninjaui.UIContext.activeContext()
+    h = ctx.contentActionHandler()
+    a = h.actionContext()
+    token_state = a.token
+    var = binaryninja.Variable.from_identifier(ssa.function.ssa_form, token_state.token.value)
+    ts : binaryninja.architecture.InstructionTextToken = token_state.token
+    ssa_var = None
+    #print(f'var={var} {type(ts)} {ts.text}')
+    if '#' in ts.text:
+        var_name, var_version = ts.text.split('#')
+        ssa_var = binaryninja.mediumlevelil.SSAVariable(var, int(var_version))
+
+    if ssa_var:
+        dfil_node = dfil_fx.vars_to_nodes.get(repr(ssa_var), None)
+        print(f'Made SSA var, got node {dfil_node.node_id}')
+    else:
+        # No variable selected, just use the whole instruction
+        dfil_node = dfil_fx.nodes_by_il.get(ssa.instr_index, None)
+
+    if dfil_node != None:
+        dfil_fx.graph_flows_from(dfil_node)
+    else:
+        print(f'Could not find instruction {ssa.instr_index} {ssa.expr_index}')

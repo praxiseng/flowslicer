@@ -265,16 +265,8 @@ def display_node_tree(dfil_fx, node, depth=0):
         display_node_tree(dfil_fx, out_edge.out_node, depth=depth+1)
 
 
-def analyze_function(bv: binaryninja.BinaryView,
-                     fx: binaryninja.Function):
-    print('Hello, world!')
-    print(f'bv={bv}')
-    print(f'fx={fx}')
-
-    parser = ILParser()
-    dfil_fx = parser.parse(fx.hlil.ssa_form)
-
-    for block in parser.data_blocks:
+def print_dfil(dfil_fx : DataFlowILFunction):
+    for block in dfil_fx.basic_blocks:
         range_txt = f'{block.il_block.start:3} {block.il_block.end}'
         print(f'Block {block.block_id} with {len(block.data_nodes)} nodes: {block.il_block}, {range_txt}')
         for dn in block.data_nodes:
@@ -288,6 +280,19 @@ def analyze_function(bv: binaryninja.BinaryView,
             # print(f'{dn.node_id:2} {hlil_index:2} {optxt:20}  {in_txt:20} {out_txt:30} {dn.format_tokens():40}')
             print(f'{dn.node_id:2} {hlil_index:2} {dfil_txt:60} {dn.format_tokens():40}')
 
+
+
+def analyze_function(bv: binaryninja.BinaryView,
+                     fx: binaryninja.Function):
+    print('Hello, world!')
+    print(f'bv={bv}')
+    print(f'fx={fx}')
+
+    parser = ILParser()
+    dfil_fx = parser.parse(fx.hlil.ssa_form)
+
+    print_dfil(dfil_fx)
+
     for block in parser.data_blocks:
 
         print(block.get_txt())
@@ -300,3 +305,9 @@ def analyze_function(bv: binaryninja.BinaryView,
     # dfil_fx.graph_flows_from(test_node)
 
     dfil_fx.graph()
+
+
+
+def analyze_hlil_instruction(bv: binaryninja.BinaryView,
+                            instr: highlevelil.HighLevelILInstruction):
+    print(f'Analyze instr {instr.ssa_form}')

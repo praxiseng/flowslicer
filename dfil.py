@@ -7,6 +7,13 @@ from binaryninja.enums import HighLevelILOperation as HlilOp
 from typing import Union, Callable, Optional
 
 
+
+def intersperse(lst, item):
+    result = [item] * (len(lst) * 2 - 1)
+    result[0::2] = lst
+    return result
+
+
 def call_formatter(prefix='', infix=','):
     def formatter(operands) -> str:
         return f'{prefix}{operands[0]}({infix.join(operands[1:])})'
@@ -29,6 +36,23 @@ def prefix_formatter(prefix, infix=',', postfix=''):
         return f'{prefix}{infix.join(operands)}{postfix}'
 
     return formatter
+
+
+class TokenExpression:
+    def __init__(self, base_node, tokens):
+        self.base_node = base_node
+        self.tokens = tokens
+
+    def get_text(self):
+
+        tokens = []
+        for tok in self.tokens:
+            match tok:
+                case DataNode() as dn:
+                    tokens.append('N' + str(dn.node_id))
+                case other:
+                    tokens.append(str(tok))
+        return "".join(tokens)
 
 
 @dataclass(frozen=True)
@@ -202,6 +226,19 @@ class DataNode:
                 return f'{ssa.var.name}{version}'
         return None
 
+    def get_il_index(self, default=None):
+        return self.base_instr.instr_index
+        #if hasattr(self.il_expr, 'instr_index'):
+        #    return self.il_expr.instr_index
+        #return default
+
+    def get_il_address(self, default=None):
+        return self.base_instr.address
+        #if hasattr(self.il_expr, 'address'):
+        #    return self.il_expr.address
+        #return default
+
+
     def get_dfil_txt(self, displayed_nodes=frozenset()):
         if self.node_id in displayed_nodes:
             return f'{self.node_id}'
@@ -217,12 +254,20 @@ class DataNode:
     def format_tokens(self):
         return self.get_dfil_txt()
 
+    def get_expression(self) -> TokenExpression:
+        if self.operation is DataFlowILOperation.DFIL_DECLARE_CONST:
+            return TokenExpression(self, [self.operation.name, '(', self.il_expr, ')'])
+
+        return TokenExpression(self, [self.operation.name, '('] + intersperse(self.operands, ',') + [')'])
+
+
 
 class EdgeType(enum.IntEnum):
-    Move = 1  # copy, used in arithmetic, etc
-    Load = 2  # Used directly as an address for a load operation
-    Store = 3  # Used directly as an address for a store operation
+    Move = 1    # copy, used in arithmetic, etc
+    Load = 2    # Used directly as an address for a load operation
+    Store = 3   # Used directly as an address for a store operation
     Branch = 4  # Used directly as an address for indirect branching or control flow
+    Arg = 5     # Use as an argument to a function
 
     def onechar(self):
         return self.name[0]
@@ -279,6 +324,8 @@ class ControlEdgeType(enum.IntEnum):
         }
         return branch_map.get(bbe.type, ControlEdgeType.Undefined)
 
+    def short(self):
+        return self.name[0]
 
 @dataclass(frozen=True)
 class ControlEdge:

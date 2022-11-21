@@ -7,7 +7,6 @@ from binaryninja.enums import HighLevelILOperation as HlilOp
 from typing import Union, Callable, Optional
 
 
-
 def intersperse(lst, item):
     result = [item] * (len(lst) * 2 - 1)
     result[0::2] = lst
@@ -39,21 +38,31 @@ def prefix_formatter(prefix, infix=',', postfix=''):
 
 
 class TokenExpression:
-    def __init__(self, base_node, tokens):
+    def __init__(self,
+                 base_node: 'DataNode',
+                 tokens: 'list[Union[str, int, DataNode]]',
+                 folded_nids=set()):
         self.base_node = base_node
         self.tokens = tokens
+        self.folded_nids = folded_nids | {base_node.node_id}
+        self.uses: 'list[ExpressionEdge]' = []
 
     def get_text(self):
-
         tokens = []
         for tok in self.tokens:
             match tok:
                 case DataNode() as dn:
                     tokens.append('N' + str(dn.node_id))
+                case ExpressionEdge() as ee:
+                    tokens.append('X' + str(ee.in_expr.base_node.node_id))
                 case other:
                     tokens.append(str(tok))
         return "".join(tokens)
 
+@dataclass(init=True, frozen=True, eq=True)
+class ExpressionEdge:
+    in_expr: TokenExpression
+    out_expr: TokenExpression
 
 @dataclass(frozen=True)
 class DataFlowOp:
@@ -192,6 +201,7 @@ class DataNode:
         commonil.BaseILInstruction, binaryninja.mediumlevelil.SSAVariable, binaryninja.variable.Variable, int]
     operands: list
     node_id: int
+    block_id: int
     operation: DataFlowILOperation
 
     def __post_init__(self):

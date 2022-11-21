@@ -2,7 +2,10 @@
 from collections import defaultdict
 from binaryninja.mediumlevelil import SSAVariable
 from binaryninja import flowgraph, BranchType
-from dfil import *
+try:
+    from .dfil import *
+except ImportError:
+    from dfil import *
 from collections.abc import Mapping
 
 
@@ -27,6 +30,63 @@ class DataSlice:
             print(f'Node {expression.base_node.node_id:2} Expression {"".join(expression.get_text())}')
 
 
+class ExpressionSlice:
+    ''' To fold expressions, we need a different notion of nodes and edges that expands
+        lists into descriptions. '''
+    def __init__(self, nodes: list[DataNode]):
+        self.nodes = nodes
+        self.expressions: list[TokenExpression] = []
+        self.xmap: dict[int, TokenExpression] = {}
+        self.input_nodes = set()
+        for n in nodes:
+            expr = n.get_expression()
+            self.expressions.append(expr)
+            self.xmap[n.node_id] = expr
+
+        for expr in self.expressions:
+            for index, token in enumerate(expr.tokens):
+                if isinstance(token, DataNode):
+                    if token.node_id in self.xmap:
+                        in_expr = self.xmap[token.node_id]
+                        edge = ExpressionEdge(in_expr, expr)
+                        in_expr.uses.append(edge)
+                        expr.tokens[index] = edge
+                    else:
+                        self.input_nodes.add(token.node_id)
+
+    def fold_node(self, node_id):
+        assert(node_id in self.xmap)
+
+    def fold_constants(self):
+        new_expressions = []
+        for expr in self.expressions:
+            if expr.base_node.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
+                continue
+            new_expressions.append(expr)
+            for index, token in enumerate(expr.tokens):
+                match token:
+                    case DataNode() as dn:
+                        if dn.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
+                            expr.tokens[index] = dn.il_expr
+                            self.input_nodes.remove(dn.node_id)
+                    case ExpressionEdge() as ee:
+                        in_expr: TokenExpression = ee.in_expr
+                        if in_expr.base_node.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
+                            expr.tokens[index] = in_expr.base_node.il_expr
+        self.expressions = new_expressions
+
+    def display_verbose(self, dfx):
+
+        print(f'Input: {self.input_nodes}')
+        #for n in self.nodes:
+        #    dfx.print_verbose_node_line(n)
+
+        for expression in self.expressions:
+            print(f'Node {expression.base_node.node_id:2} Expression {"".join(expression.get_text())}')
+
+
+
+
 def fold_const(data_slice: DataSlice) -> DataSlice:
     const_node_nids = [n.node_id for n in data_slice.nodes if n.operation == DataFlowILOperation.DFIL_DECLARE_CONST]
     new_nodes = [n for n in data_slice.nodes if n.operation != DataFlowILOperation.DFIL_DECLARE_CONST]
@@ -35,15 +95,18 @@ def fold_const(data_slice: DataSlice) -> DataSlice:
     for expr in data_slice.expressions:
         if expr.tokens[0] == 'DFIL_DECLARE_CONST':
             continue
+        folded_nids = expr.folded_nids
         new_tokens = []
         for tok in expr.tokens:
             if isinstance(tok, DataNode) and tok.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
                 new_tokens.extend(tok.get_expression().tokens)
+                folded_nids = folded_nids | {tok.node_id}
             else:
                 new_tokens.append(tok)
-        new_expressions.append(TokenExpression(expr.base_node, new_tokens))
+        new_expressions.append(TokenExpression(expr.base_node, new_tokens, folded_nids))
 
     return DataSlice(new_nodes, new_edges, new_expressions)
+
 
 
 DEFAULT_SLICING_BLACKLIST=\
@@ -307,7 +370,7 @@ class ILParser:
     def __init__(self):
         self.next_node_id = 1
         self.data_blocks = []
-        self.current_data_bb = None
+        self.current_data_bb: DataBasicBlock
         self.current_base_instr = None
 
         self.il_bb_to_dbb = {}
@@ -326,7 +389,8 @@ class ILParser:
         node_id = self.next_node_id
         self.next_node_id += 1
         dfil_op = get_dfil_op(expr)
-        dn = DataNode(self.current_base_instr, expr, operands, node_id, dfil_op)
+        bb_id = self.current_data_bb.block_id
+        dn = DataNode(self.current_base_instr, expr, operands, node_id, bb_id, dfil_op)
         self.current_data_bb.data_nodes.append(dn)
         self.nodes_by_id[node_id] = dn
         if out_var:
@@ -526,7 +590,7 @@ def handle_function(bv: binaryninja.BinaryView,
                     fx: binaryninja.Function):
 
     parser = ILParser()
-    dfx: DataFlowILFunction = parser.parse(fx.hlil.ssa_form)
+    dfx: DataFlowILFunction = parser.parse(list(fx.hlil.ssa_form))
     #print_dfil(dfx)
 
     for bb in dfx.basic_blocks:
@@ -549,14 +613,17 @@ def handle_function(bv: binaryninja.BinaryView,
 
         expressions = [n.get_expression() for n in nodes]
 
-        data_slice = DataSlice(nodes, interior_edges, expressions)
-        slice_objs.append(data_slice)
+        #data_slice = DataSlice(nodes, interior_edges, expressions)
+        #slice_objs.append(data_slice)
 
-        #s.display_verbose(dfx)
+        # s.display_verbose(dfx)
 
-        #print('FOLDED: ********************')
-        folded = fold_const(data_slice)
-        folded.display_verbose(dfx)
+        # print('FOLDED: ********************')
+        #folded = fold_const(data_slice)
+        #folded.display_verbose(dfx)
+        xslice = ExpressionSlice(nodes)
+        xslice.fold_constants()
+        xslice.display_verbose(dfx)
 
 def main():
     import argparse

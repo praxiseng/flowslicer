@@ -40,7 +40,7 @@ def prefix_formatter(prefix, infix=',', postfix=''):
 class TokenExpression:
     def __init__(self,
                  base_node: 'DataNode',
-                 tokens: 'list[Union[str, int, DataNode]]',
+                 tokens: 'list[Union[str, int, DataNode, ExpressionEdge]]',
                  folded_nids=set()):
         self.base_node = base_node
         self.tokens = tokens
@@ -59,10 +59,29 @@ class TokenExpression:
                     tokens.append(str(tok))
         return "".join(tokens)
 
+    def getIncoming(self) -> 'list[ExpressionEdge]':
+        return [token for token in self.tokens if isinstance(token, ExpressionEdge)]
+
+
+    def edgeIndex(self, edge: 'ExpressionEdge'):
+        for index, token in enumerate(self.tokens):
+            if token == edge:
+                return index
+
+
 @dataclass(init=True, frozen=True, eq=True)
 class ExpressionEdge:
     in_expr: TokenExpression
     out_expr: TokenExpression
+
+    def outIndex(self):
+        return self.out_expr.edgeIndex(self)
+
+    def __str__(self):
+        return f'<{self.in_expr.base_node.node_id}->{self.out_expr.base_node.node_id}>'
+
+    def __repr__(self):
+        return self.__str__()
 
 @dataclass(frozen=True)
 class DataFlowOp:
@@ -198,7 +217,10 @@ def get_dfil_op(expr):
 class DataNode:
     base_instr: highlevelil.HighLevelILInstruction
     il_expr: Union[
-        commonil.BaseILInstruction, binaryninja.mediumlevelil.SSAVariable, binaryninja.variable.Variable, int]
+        commonil.BaseILInstruction,
+        binaryninja.mediumlevelil.SSAVariable,
+        binaryninja.variable.Variable,
+        int]
     operands: list
     node_id: int
     block_id: int
@@ -264,11 +286,23 @@ class DataNode:
     def format_tokens(self):
         return self.get_dfil_txt()
 
+
+    def _tokenize_operand(self, operand):
+        match operand:
+            #case DataNode() as dn:
+            #    return f'M{dn.node_id}'
+            case _:
+                return str(operand)
+
+    def _tokenize_operands(self):
+        #return intersperse([self._tokenize_operand(operand) for operand in self.operands], ',')
+        return intersperse(self.operands, ',')
+
     def get_expression(self) -> TokenExpression:
         if self.operation is DataFlowILOperation.DFIL_DECLARE_CONST:
             return TokenExpression(self, [self.operation.name, '(', self.il_expr, ')'])
 
-        return TokenExpression(self, [self.operation.name, '('] + intersperse(self.operands, ',') + [')'])
+        return TokenExpression(self, [self.operation.name, '('] + self._tokenize_operands() + [')'])
 
 
 

@@ -1,7 +1,12 @@
 
 from collections import defaultdict
+from typing import List
+
 from binaryninja.mediumlevelil import SSAVariable
 from binaryninja import flowgraph, BranchType
+
+from dfil import DataNode, DataFlowEdge, TokenExpression
+
 try:
     from .dfil import *
 except ImportError:
@@ -27,7 +32,8 @@ class DataSlice:
             print(f'  {edge.in_node.node_id:2} -> {edge.out_node.node_id:2}  {edge.edge_type.name}')
 
         for expression in self.expressions:
-            print(f'Node {expression.base_node.node_id:2} Expression {"".join(expression.get_text())}')
+            n = expression.base_node
+            print(f'BB {n.block_id:2} Node {n.node_id:2} Expression {"".join(expression.get_text())}')
 
 
 class ExpressionSlice:
@@ -68,30 +74,82 @@ class ExpressionSlice:
                     case DataNode() as dn:
                         if dn.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
                             expr.tokens[index] = dn.il_expr
-                            self.input_nodes.remove(dn.node_id)
+                            try:
+                                self.input_nodes.remove(dn.node_id)
+                            except KeyError:
+                                pass
                     case ExpressionEdge() as ee:
                         in_expr: TokenExpression = ee.in_expr
                         if in_expr.base_node.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
                             expr.tokens[index] = in_expr.base_node.il_expr
         self.expressions = new_expressions
 
-    def display_verbose(self, dfx):
 
+    def fold_remove_nodes(self, remove_condition):
+        new_expressions = []
+        for expr in self.expressions:
+            if not remove_condition(expr):
+                new_expressions.append(expr)
+                continue
+
+            incoming: list[ExpressionEdge] = expr.getIncoming()
+
+            # print(f'Edges {expr.base_node.node_id} out {expr.uses}, {incoming}')
+            for out_edge in expr.uses:
+                tokens = expr.tokens[:]
+                for in_edge in incoming:
+
+                    in_node = in_edge.in_expr.base_node.node_id
+                    out_node = out_edge.out_expr.base_node.node_id
+
+                    # print(f'\nTokenA {in_node:2} {in_edge.in_expr.get_text()}')
+                    # print(f'TokenB {expr.base_node.node_id:2} {expr.get_text()}')
+                    # print(f'TokenC {out_node:2} { out_edge.out_expr.get_text()}')
+
+                    new_edge = ExpressionEdge(in_edge.in_expr, out_edge.out_expr)
+                    for index, token in enumerate(expr.tokens):
+                        if in_edge == token:
+                            tokens[index] = new_edge
+                    in_edge.in_expr.uses.append(new_edge)
+
+                out_tokens = out_edge.out_expr.tokens
+                for index, token in enumerate(out_tokens):
+                    if out_edge == token:
+                        #print(f'Subs {expr.base_node.node_id} {out_tokens[index]} with {tokens} in {out_tokens}')
+                        out_tokens[index:index + 1] = tokens
+                        break
+                else:
+                    print(f'WARNING: could not find token for out edge')
+
+            for in_edge in incoming:
+                in_edge.in_expr.uses.remove(in_edge)
+
+        self.expressions = new_expressions
+
+
+    def fold_single_use(self):
+        return self.fold_remove_nodes(lambda expr: len(expr.uses) == 1)
+
+
+    def display_verbose(self, dfx):
         print(f'Input: {self.input_nodes}')
         #for n in self.nodes:
         #    dfx.print_verbose_node_line(n)
 
         for expression in self.expressions:
-            print(f'Node {expression.base_node.node_id:2} Expression {"".join(expression.get_text())}')
+            use_nodes = [use.out_expr.base_node.node_id for use in expression.uses]
+            use_txt = ','.join(str(u) for u in use_nodes)
+            node = expression.base_node
+            print(f'BB {node.block_id:2} Node {node.node_id:2} Use {use_txt:10} Expression {"".join(expression.get_text())}')
 
 
 
 
 def fold_const(data_slice: DataSlice) -> DataSlice:
     const_node_nids = [n.node_id for n in data_slice.nodes if n.operation == DataFlowILOperation.DFIL_DECLARE_CONST]
-    new_nodes = [n for n in data_slice.nodes if n.operation != DataFlowILOperation.DFIL_DECLARE_CONST]
-    new_edges = [e for e in data_slice.edges if e.in_node.node_id not in const_node_nids]
-    new_expressions = []
+    new_nodes: list[DataNode] = [n for n in data_slice.nodes if n.operation != DataFlowILOperation.DFIL_DECLARE_CONST]
+    new_edges: list[DataFlowEdge] = [e for e in data_slice.edges if e.in_node.node_id not in const_node_nids]
+    new_expressions: list[TokenExpression] = []
     for expr in data_slice.expressions:
         if expr.tokens[0] == 'DFIL_DECLARE_CONST':
             continue
@@ -196,7 +254,7 @@ class DataFlowILFunction:
                       op_blacklist: list[DataFlowILOperation] = DEFAULT_SLICING_BLACKLIST
                       ):
 
-        print(f'\nExpanding {start_nid}')
+        # print(f'\nExpanding {start_nid}')
         nids_in_slice = {start_nid}
         remaining_nodes = {start_nid}
         while remaining_nodes:
@@ -214,7 +272,7 @@ class DataFlowILFunction:
             nodes_out_txt = ','.join([str(n.node_id) for n in nodes_out])
             nodes_inout_txt = f'in:{nodes_in_txt:8} out:{nodes_out_txt:12}'
 
-            print(f'Expand {nid:4}  {str(remaining_nodes):30} {nodes_inout_txt} {nids_in_slice}')
+            # print(f'Expand {nid:4}  {str(remaining_nodes):30} {nodes_inout_txt} {nids_in_slice}')
             for n in connected_nodes:
                 if n.node_id in nids_in_slice:
                     continue
@@ -223,7 +281,7 @@ class DataFlowILFunction:
                 nids_in_slice.add(n.node_id)
                 # We capture blacklisted nodes in the slice, but don't traverse their edges
 
-                print(f'Node {n.node_id}  {"not " if n.operation not in op_blacklist else ""}in blacklist')
+                # print(f'Node {n.node_id}  {"not " if n.operation not in op_blacklist else ""}in blacklist')
                 if n.operation not in op_blacklist:
                     remaining_nodes.add(n.node_id)
         return nids_in_slice
@@ -408,7 +466,9 @@ class ILParser:
     def _unimplemented(self, expr):
         node_id = self.next_node_id
         self.next_node_id += 1
-        return DataNode(self.current_base_instr, expr, [], node_id, DataFlowILOperation.DFIL_UNKNOWN)
+        return DataNode(self.current_base_instr, expr, [], node_id,
+                        self.current_data_bb.block_id,
+                        DataFlowILOperation.DFIL_UNKNOWN)
 
     def _var(self, var):
         if var in self.varnodes:
@@ -618,11 +678,13 @@ def handle_function(bv: binaryninja.BinaryView,
 
         # s.display_verbose(dfx)
 
-        # print('FOLDED: ********************')
+        print('FOLDED: ********************')
         #folded = fold_const(data_slice)
         #folded.display_verbose(dfx)
         xslice = ExpressionSlice(nodes)
-        xslice.fold_constants()
+        #xslice.fold_constants()
+        print(f'Nodes: {",".join(str(nid) for nid in nids)}')
+        xslice.fold_single_use()
         xslice.display_verbose(dfx)
 
 def main():

@@ -47,7 +47,7 @@ class TokenExpression:
         self.folded_nids = folded_nids | {base_node.node_id}
         self.uses: 'list[ExpressionEdge]' = []
 
-    def get_text(self):
+    def get_full_text(self):
         tokens = []
         for tok in self.tokens:
             match tok:
@@ -58,6 +58,50 @@ class TokenExpression:
                 case other:
                     tokens.append(str(tok))
         return "".join(tokens)
+
+    def get_short_text(self):
+        tokens = []
+        for tok in self.tokens:
+            match tok:
+                case DataNode() as dn:
+                    tokens.append('N' + str(dn.node_id))
+                case ExpressionEdge() as ee:
+                    tokens.append('X' + str(ee.in_expr.base_node.node_id))
+                case int():
+                    tokens.append(f'0x{tok:x}')
+                case other:
+                    strtok = str(tok)
+                    replacements = {
+                        "DFIL_DECLARE_CONST" : "",
+                        "DFIL_CMP_NE" : "!=",
+                        "DFIL_CMP_E" : "==",
+                        "DFIL_PHI" : u"ϕ"
+                    }
+                    if strtok in replacements:
+                        strtok = replacements[strtok]
+                    if strtok.startswith('DFIL_'):
+                        strtok = strtok[5:]
+                    tokens.append(strtok)
+        return "".join(tokens)
+
+    def get_anonymous_tokens(self):
+        tokens = []
+        for tok in self.tokens:
+            match tok:
+                case DataNode() as dn:
+                    tokens.append('N' + str(dn.node_id))
+                case ExpressionEdge() as ee:
+                    tokens.append('EDGE')
+                case int():
+                    tokens.append(f'0x{tok:x}')
+                case other:
+                    strtok = str(tok)
+                    tokens.append(str(tok))
+        return "".join(tokens)
+
+
+    def get_text(self):
+        return self.get_short_text()
 
     def getIncoming(self) -> 'list[ExpressionEdge]':
         return [token for token in self.tokens if isinstance(token, ExpressionEdge)]

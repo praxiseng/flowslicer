@@ -14,6 +14,21 @@ except ImportError:
 from collections.abc import Mapping
 
 
+class DFILCFG:
+    def __init__(self,
+                 basic_blocks: list[DataBasicBlock],
+                 control_edges: list[ControlEdge]):
+        self.basic_blocks = basic_blocks
+        self.control_edges = control_edges
+        self.display_cfg()
+
+    def display_cfg(self):
+        for ce in self.control_edges:
+            data_node_id = f'N{ce.data_node.node_id}' if ce.data_node else ''
+            print(f'{ce.edge_type.name:14} BB{ce.in_block.block_id}->BB{ce.out_block.block_id} {data_node_id}')
+
+
+
 @dataclass(init=True, frozen=True)
 class DataSlice:
     nodes: list[DataNode]
@@ -44,6 +59,7 @@ class ExpressionSlice:
         self.expressions: list[TokenExpression] = []
         self.xmap: dict[int, TokenExpression] = {}
         self.input_nodes = set()
+
         for n in nodes:
             expr = n.get_expression()
             self.expressions.append(expr)
@@ -84,45 +100,76 @@ class ExpressionSlice:
                             expr.tokens[index] = in_expr.base_node.il_expr
         self.expressions = new_expressions
 
+    def bypass_edges(self, current_expr, out_expr):
+        ''' Creates a new token list bypassing the current expression.
+            The resulting token list can then be embedded in out_expr.
+            If all uses of an expression are eliminated, then current_expr
+            can be eliminated. '''
+
+        tokens = current_expr.tokens[:]
+
+        incoming: list[ExpressionEdge] = current_expr.getIncoming()
+
+        ''' Make new ExpressionEdge objects that skip the current expression '''
+        for in_edge in incoming:
+            # print(f'\nTokenA {in_edge.in_expr.base_node.node_id:2} {in_edge.in_expr.get_text()}')
+            # print(f'TokenB {expr.base_node.node_id:2} {expr.get_text()}')
+            # print(f'TokenC {out_edge.out_expr.base_node.node_id:2} {out_edge.out_expr.get_text()}')
+
+
+            new_edge = ExpressionEdge(in_edge.in_expr, out_expr)
+            for index, token in enumerate(current_expr.tokens):
+                if in_edge == token:
+                    tokens[index] = new_edge
+            in_edge.in_expr.uses.append(new_edge)
+
+        return tokens
+
+    def embed_edge_tokens(self,
+                          edge : ExpressionEdge,
+                          embed_tokens):
+        for index, token in enumerate(edge.out_expr.tokens):
+            if edge == token:
+                edge.out_expr.tokens[index:index + 1] = embed_tokens
+                break
+        else:
+            print(f'WARNING: could not find token for out edge')
+
+    def fold_expression(self, expr):
+        ''' For every use, embed a copy of the current expression, but with incoming ExpressionEdges
+            substituted
+
+            For example:
+               To fold the following expression 20 into expression 30:
+
+               20: DFIL_ADD(10->20, 11->20)
+               30: DFIL_DEREF(20->30)
+
+               We must create new edges that skip 20, resulting in the following folded expression:
+
+               30: DFIL_DEREF(DFIL_ADD(10->30, 11->30))
+
+        '''
+
+        # note: cannot clean incoming edges in bypass_edges because it is used multiple times.
+        incoming: list[ExpressionEdge] = expr.getIncoming()
+
+        # print(f'Edges {expr.base_node.node_id} out {expr.uses}, {incoming}')
+        for out_edge in expr.uses:
+            ''' Make new ExpressionEdge objects that skip the current expression '''
+            tokens = self.bypass_edges(expr, out_edge.out_expr)
+            self.embed_edge_tokens(out_edge, tokens)
+
+        for in_edge in incoming:
+            in_edge.in_expr.uses.remove(in_edge)
 
     def fold_remove_nodes(self, remove_condition):
         new_expressions = []
         for expr in self.expressions:
-            if not remove_condition(expr):
+            if remove_condition(expr):
+                self.fold_expression(expr)
+            else:
                 new_expressions.append(expr)
-                continue
-
-            incoming: list[ExpressionEdge] = expr.getIncoming()
-
-            # print(f'Edges {expr.base_node.node_id} out {expr.uses}, {incoming}')
-            for out_edge in expr.uses:
-                tokens = expr.tokens[:]
-                for in_edge in incoming:
-
-                    in_node = in_edge.in_expr.base_node.node_id
-                    out_node = out_edge.out_expr.base_node.node_id
-
-                    # print(f'\nTokenA {in_node:2} {in_edge.in_expr.get_text()}')
-                    # print(f'TokenB {expr.base_node.node_id:2} {expr.get_text()}')
-                    # print(f'TokenC {out_node:2} { out_edge.out_expr.get_text()}')
-
-                    new_edge = ExpressionEdge(in_edge.in_expr, out_edge.out_expr)
-                    for index, token in enumerate(expr.tokens):
-                        if in_edge == token:
-                            tokens[index] = new_edge
-                    in_edge.in_expr.uses.append(new_edge)
-
-                out_tokens = out_edge.out_expr.tokens
-                for index, token in enumerate(out_tokens):
-                    if out_edge == token:
-                        #print(f'Subs {expr.base_node.node_id} {out_tokens[index]} with {tokens} in {out_tokens}')
-                        out_tokens[index:index + 1] = tokens
-                        break
-                else:
-                    print(f'WARNING: could not find token for out edge')
-
-            for in_edge in incoming:
-                in_edge.in_expr.uses.remove(in_edge)
 
         self.expressions = new_expressions
 
@@ -130,6 +177,8 @@ class ExpressionSlice:
     def fold_single_use(self):
         return self.fold_remove_nodes(lambda expr: len(expr.uses) == 1)
 
+    def fold_const(self):
+        return self.fold_remove_nodes(lambda expr: expr.base_node.operation==DataFlowILOperation.DFIL_DECLARE_CONST)
 
     def display_verbose(self, dfx):
         print(f'Input: {self.input_nodes}')
@@ -143,6 +192,117 @@ class ExpressionSlice:
             print(f'BB {node.block_id:2} Node {node.node_id:2} Use {use_txt:10} Expression {"".join(expression.get_text())}')
 
 
+class Canonicalizer:
+    def __init__(self,
+                 slice: ExpressionSlice,
+                 cfg: DFILCFG,
+                 includeBB: bool = True):
+        self.slice = slice
+        self.cfg = cfg
+
+        self.includeBB = includeBB
+
+        # Map expression indicies to canonical ID numbers
+        self.canonical_expressions = {}
+
+        # Map input nodes (NIDs) to canonical ID numbers
+        self.canonical_nids = {}
+
+        # Map basic block ID to canonical block ID
+        self.canonical_block_ids = {}
+
+        self.expressions = self.slice.expressions[:]
+
+        # We first sort using a key agnostic to exact node IDs.
+        # This may not be the best - multiple expressions may sort similarly, and have
+        # an arbitrary ordering.  We could maybe pull graph dependencies for the ordering, but
+        # it is unclear how to break cycles.
+        self.expressions = sorted(self.expressions, key=self.expression_sort_key())
+        self.display_canonical_state('Stage 1: ')
+
+        # Give canonical numbers based on order of appearance.
+        self.canonical_numeralize()
+
+        self.expressions = sorted(self.expressions, key=self.expression_sort_key())
+        self.display_canonical_state('Stage 2: ')
+
+    def get_expression_cnid(self, expr : TokenExpression):
+        nid = expr.base_node.node_id
+        return self.canonical_expressions.get(nid, None)
+
+    def get_canonical_block_id(self, expr : TokenExpression):
+        bb_id = expr.base_node.block_id
+        return self.canonical_block_ids.get(bb_id, None)
+
+    def get_node_cnid(self, node : DataNode):
+        return self.canonical_nids.get(node.node_id, None)
+
+
+    def get_canonical_token_value(self, token):
+        match token:
+            case ExpressionEdge() as ee:
+                cnid = self.get_expression_cnid(ee.in_expr)
+                return "EXPRESSION" if cnid is None else f"X{cnid}"
+            case DataNode() as dn:
+                cnid = self.get_node_cnid(dn)
+                return "INPUT" if cnid is None else f"N{cnid}"
+            case int():
+                return f'0x{token:x}'
+            case str():
+                return token
+            case _:
+                return None
+
+
+    def expression_sort_key(self):
+        def expression_sort_key_fx(expr: TokenExpression):
+            key = []
+
+            for token in expr.tokens:
+                value = self.get_canonical_token_value(token)
+                if value is None:
+                    print(f"Unknown type: {type(token)}: {token}")
+                else:
+                    key.append(value)
+
+            return key
+        return expression_sort_key_fx
+
+    def canonical_numeralize(self):
+        cexp_counter = 0
+        node_counter = 0
+        block_id_counter = 0
+
+        for expr in self.expressions:
+            node = expr.base_node
+            nid = node.node_id
+            if nid not in self.canonical_expressions:
+                self.canonical_expressions[nid] = cexp_counter
+                cexp_counter += 1
+
+            bb_id = node.block_id
+            if bb_id not in self.canonical_block_ids:
+                self.canonical_block_ids[bb_id] = block_id_counter
+                block_id_counter += 1
+
+            for token in expr.tokens:
+                match token:
+                    case DataNode() as dn:
+                        if dn.node_id not in self.canonical_nids:
+                            self.canonical_nids[dn.node_id] = node_counter
+                            node_counter += 1
+
+    def display_canonical_state(self, prefix=''):
+        sort_key_fx = self.expression_sort_key()
+        for expr in self.expressions:
+            sort_key = "".join(str(tok) for tok in sort_key_fx(expr))
+            cnid = self.get_expression_cnid(expr)
+            cnid_txt = '' if cnid is None else f'X{cnid:<3} '
+
+            cbid = self.get_canonical_block_id(expr)
+            cbid_txt = '' if cbid is None else f'BB{cbid:<2} '
+
+            print(f'{prefix}{cnid_txt}{cbid_txt}{expr.get_text():32} {sort_key}')
 
 
 def fold_const(data_slice: DataSlice) -> DataSlice:
@@ -166,7 +326,6 @@ def fold_const(data_slice: DataSlice) -> DataSlice:
     return DataSlice(new_nodes, new_edges, new_expressions)
 
 
-
 DEFAULT_SLICING_BLACKLIST=\
     frozenset({
         DataFlowILOperation.DFIL_CALL,
@@ -188,6 +347,8 @@ class DataFlowILFunction:
 
         self.basic_blocks = basic_blocks
         self.control_edges = control_edges
+
+        self.cfg = DFILCFG(basic_blocks, control_edges)
 
         self.all_nodes: dict[int, DataNode] = {}
         self.node_to_bb: dict[int, DataBasicBlock] = {}
@@ -683,9 +844,13 @@ def handle_function(bv: binaryninja.BinaryView,
         #folded.display_verbose(dfx)
         xslice = ExpressionSlice(nodes)
         #xslice.fold_constants()
+        xslice.fold_const()
         print(f'Nodes: {",".join(str(nid) for nid in nids)}')
         xslice.fold_single_use()
         xslice.display_verbose(dfx)
+
+        cexp = Canonicalizer(xslice, dfx.cfg)
+        #xslice.canonicalize()
 
 def main():
     import argparse

@@ -422,6 +422,10 @@ class ControlEdge:
     edge_type: ControlEdgeType
     data_node: DataNode
 
+    def get_txt(self):
+        data_node_id = f'N{self.data_node.node_id}' if self.data_node else ''
+        return f'{self.edge_type.name:14} BB{self.in_block.block_id}->BB{self.out_block.block_id} {data_node_id}'
+
 
 @dataclass()
 class DataBasicBlock:

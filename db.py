@@ -40,7 +40,7 @@ class ID:
             ) for value, id in self.values.items()
         ]
 
-def load_cbor_file(path):
+def load_cbor_file(path, include_detail=False):
     file_ids = ID()
     func_ids = ID()
     entries = []
@@ -49,16 +49,21 @@ def load_cbor_file(path):
         try:
             while True:
                 line = cbor2.load(fd)
-
-                path = line['file']['path']
-                func_address = line['function']['address']
                 text = line['canonicalText']
-
-                file_id = file_ids.get(path)
-                func_id = func_ids.get(func_address)
                 slice_hash = md5(text.encode('ascii'))
-                entries.append((slice_hash, file_id, func_id))
 
+                if include_detail:
+                    entry = (slice_hash, line)
+                else:
+                    path = line['file']['path']
+                    func_address = line['function']['address']
+
+                    file_id = file_ids.get(path)
+                    func_id = func_ids.get(func_address)
+
+                    entry = (slice_hash, file_id, func_id)
+
+                entries.append(entry)
         except cbor2.CBORDecodeEOF:
             pass
 
@@ -66,7 +71,7 @@ def load_cbor_file(path):
         files=[dict(id=fid, path=path) for path, fid in file_ids.values.items()]
     )
 
-    return header, sorted(entries)
+    return header, sorted(entries, key=lambda x:x[0])
 
 
 def convert_to_counts(entries):
@@ -117,9 +122,87 @@ class Main:
     def __init__(self):
         self.all_counts = []
         self.headers = []
-        self.merged_header = {}
+        self.db_header = {}
 
-        for path in sys.argv[1:]:
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('files', nargs='*')
+        parser.add_argument('--db', default='slicedb.db', metavar='PATH', nargs='?')
+        parser.add_argument('-s', '--search', action='store_true')
+        self.args = parser.parse_args()
+
+        if self.args.search:
+            self.search()
+        else:
+            self.ingest_files()
+
+
+    def search(self):
+        for path in self.args.files:
+            self.search_file(path)
+
+
+    def read_db_header(self):
+        with open(self.args.db, 'rb') as fd:
+            self.db_header = cbor2.load(fd)
+
+    def read_db(self):
+        with open(self.args.db, 'rb') as fd:
+            try:
+                self.db_header = cbor2.load(fd)
+                while True:
+                    yield cbor2.load(fd)
+            except cbor2.CBORDecodeEOF:
+                pass
+
+    def search_file(self, path):
+        header, hash_data = load_cbor_file(path, include_detail=True)
+        self.read_db_header()
+        db_stream = self.read_db()
+        h, fileCount, funcCount, instCount, fids = next(db_stream)
+
+        fid_lookup = {
+            file['id']: file['path'] for file in self.db_header['files']
+        }
+        print(f'hash_data = {str(hash_data)[:100]}')
+        for slice_hash, group in itertools.groupby(hash_data, key=lambda x:x[0]):
+
+            group = list(group)
+            while h < slice_hash:
+                h, fileCount, funcCount, instCount, fids = next(db_stream)
+
+            if h != slice_hash:
+                continue
+
+            func_names = [line['function']['name'] for _, line in group]
+            func_name_txt = ",".join(func_names)[:30]
+
+            count_txt = f'{fileCount:4} {funcCount:5} {instCount:5} {len(func_names):3}'
+            addressSet = set()
+            for _, line in group:
+                aset = line['addressSet']
+                addressSet |= set(line['addressSet'])
+
+            ctext = group[0][1]['canonicalText']
+            dfil_exprs = ctext.split('\n')
+
+            paths = [fid_lookup[fid] for fid in fids]
+            file_names = [os.path.basename(path) for path in paths]
+            file_name_txt = ' '.join(sorted(file_names))[:50]
+
+            addrSetText = ','.join(f'{addr:x}' for addr in sorted(addressSet))[:30]
+
+            print(f'{btoh(slice_hash)} {count_txt} {func_name_txt:30}  ' +
+                  f'{len(addressSet):3} {addrSetText:30}  ' +
+                  f'{len(file_names):4} {file_name_txt:50}  ' +
+                  f'{len(dfil_exprs):2} {dfil_exprs[0][:100]}')
+            #print(ctext)
+
+
+    def ingest_files(self):
+
+        for path in self.args.files:
             if os.path.isdir(path):
                 self.process_folder(path)
             else:
@@ -127,17 +210,10 @@ class Main:
 
         merged_counts = list(merge(self.all_counts))
         print(f'Merged counts {len(merged_counts)}')
-        #for count, index in merged_counts:
-        #    slice_hash, file_counts, func_counts, instance_counts, fids = count
-        #    print(f'Item: {btoh(slice_hash)} {index} {file_counts:3} {func_counts:3} {fids}')
         grouped_db = self.thunk_groups(merged_counts)
 
-        #for slice_hash, file_counts, func_counts, instance_counts, fids in grouped_db:
-        #    print(f'Item: {btoh(slice_hash)} {file_counts:3} {func_counts:3} {fids}')
-        out_file = 'slicedb.db'
-        items_written = self.write_to_file(out_file, self.merged_header, grouped_db)
-        print(f'Wrote {items_written} items to {out_file}')
-
+        items_written = self.write_to_file(self.args.db, self.db_header, grouped_db)
+        print(f'Wrote {items_written} items to {self.args.db}')
 
     def process_file(self, path):
         header, entries = load_cbor_file(path)
@@ -161,24 +237,7 @@ class Main:
                 file_path = os.path.join(root, file)
                 self.process_file(file_path)
 
-    def thunk_groups(self, merged_counts):
-        new_id = ID()
-        id_thunks = []
-        for header in self.headers:
-            current_thunk = {}
-            files = header['files']
-            for document in files:
-                id = document['id']
-                path = document['path']
-                current_thunk[id] = new_id.get(path)
-
-            id_thunks.append(current_thunk)
-
-        self.merged_header = dict(
-            files=[dict(id=fid, path=path) for path, fid in new_id.values.items()]
-        )
-
-
+    def _thunk_group_gen(self, merged_counts, id_thunks):
         for slice_hash, group in itertools.groupby(merged_counts, lambda x: x[0][0]):
             file_counts = 0
             func_counts = 0
@@ -194,6 +253,25 @@ class Main:
                 file_ids |= set(thunk[fid] for fid in fids)
 
             yield [slice_hash, file_counts, func_counts, instance_counts, sorted(file_ids)]
+
+    def thunk_groups(self, merged_counts):
+        new_id = ID()
+        id_thunks = []
+        for header in self.headers:
+            current_thunk = {}
+            files = header['files']
+            for document in files:
+                id = document['id']
+                path = document['path']
+                current_thunk[id] = new_id.get(path)
+
+            id_thunks.append(current_thunk)
+
+        self.db_header = dict(
+            files=[dict(id=fid, path=path) for path, fid in new_id.values.items()]
+        )
+
+        return self._thunk_group_gen(merged_counts, id_thunks)
 
     def write_to_file(self, path, header, items):
         n_written = 0

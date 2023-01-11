@@ -1,11 +1,21 @@
+import json
+import os.path
+import signal
+import sys
 
+import cbor2
 from collections import defaultdict
-from typing import List
+from typing import List, Generator
 
+from multiprocessing import Pool, Value
+
+import binaryninja.highlevelil
 from binaryninja.mediumlevelil import SSAVariable
-from binaryninja import flowgraph, BranchType
+from binaryninja import flowgraph, BranchType, HighLevelILOperation
 
 from dfil import DataNode, DataFlowEdge, TokenExpression
+verbosity = 1
+
 
 try:
     from .dfil import *
@@ -30,7 +40,7 @@ class DFILCFG:
         for edge in control_edges:
             self.edges_out[edge.in_block.block_id].append(edge)
 
-        self.display_cfg()
+        # self.display_cfg()
 
     def get_control_edges(self, block_ids: set[int]):
         return [ce for ce in self.control_edges if
@@ -44,11 +54,12 @@ class DFILCFG:
         return self.block_id_to_block.get(bb_id, None)
 
     def display_cfg(self):
+        print('CFG:')
         for ce in self.control_edges:
             print(ce.get_txt())
             #data_node_id = f'N{ce.data_node.node_id}' if ce.data_node else ''
             #print(f'{ce.edge_type.name:14} BB{ce.in_block.block_id}->BB{ce.out_block.block_id} {data_node_id}')
-
+        print('END CFG')
 
 @dataclass(init=True, frozen=True)
 class DataSlice:
@@ -72,15 +83,21 @@ class DataSlice:
             n = expression.base_node
             print(f'BB {n.block_id:2} Node {n.node_id:2} Expression {"".join(expression.get_text())}')
 
+class LimitExceededException(Exception):
+    """ Raised when a particular analysis has been run too many times """
+    pass
+
 
 class ExpressionSlice:
     ''' To fold expressions, we need a different notion of nodes and edges that expands
         lists into descriptions. '''
-    def __init__(self, nodes: list[DataNode]):
+    def __init__(self, nodes: list[DataNode], analysis_limit=1000000):
         self.nodes = nodes
         self.expressions: list[TokenExpression] = []
         self.xmap: dict[int, TokenExpression] = {}
         self.input_nodes = set()
+        self.counters = defaultdict(int)
+        self.analysis_limit = analysis_limit
 
         for n in nodes:
             expr = n.get_expression()
@@ -98,10 +115,21 @@ class ExpressionSlice:
                     else:
                         self.input_nodes.add(token.node_id)
 
+    def _limit_count(self, function_name):
+        count = self.counters[function_name]
+        self.counters[function_name] = count+1
+        if count > self.analysis_limit:
+            print(f'Iteration reached limit: {function_name} is {count}.  {len(self.nodes)} nodes, {len(self.expressions)} expressions')
+            for name, count in self.counters.items():
+                print(f'  {name:20} {count}')
+            raise LimitExceededException()
+
+
     def fold_node(self, node_id):
         assert(node_id in self.xmap)
 
     def fold_constants(self):
+        self._limit_count('fold_constants')
         new_expressions = []
         for expr in self.expressions:
             if expr.base_node.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
@@ -127,6 +155,8 @@ class ExpressionSlice:
             The resulting token list can then be embedded in out_expr.
             If all uses of an expression are eliminated, then current_expr
             can be eliminated. '''
+
+        self._limit_count('bypass_edges')
 
         tokens = current_expr.tokens[:]
 
@@ -157,6 +187,16 @@ class ExpressionSlice:
         else:
             print(f'WARNING: could not find token for out edge')
 
+
+    def getAddressSet(self):
+        address_set = set()
+
+        for node in self.nodes:
+            match node.il_expr:
+                case binaryninja.highlevelil.HighLevelILInstruction() as il_op:
+                    address_set.add(il_op.address)
+        return address_set
+
     def fold_expression(self, expr):
         ''' For every use, embed a copy of the current expression, but with incoming ExpressionEdges
             substituted
@@ -173,6 +213,7 @@ class ExpressionSlice:
 
         '''
 
+        self._limit_count('fold_expression')
         # note: cannot clean incoming edges in bypass_edges because it is used multiple times.
         incoming: list[ExpressionEdge] = expr.getIncoming()
 
@@ -186,6 +227,8 @@ class ExpressionSlice:
             in_edge.in_expr.uses.remove(in_edge)
 
     def fold_remove_nodes(self, remove_condition):
+        self._limit_count('fold_remove_nodes')
+
         new_expressions = []
         for expr in self.expressions:
             if remove_condition(expr):
@@ -277,7 +320,8 @@ class Canonicalizer:
     def __init__(self,
                  slice: ExpressionSlice,
                  cfg: DFILCFG,
-                 includeBB: bool = True):
+                 includeBB: bool = True,
+                 verbose=False):
         self.slice = slice
         self.cfg = cfg
 
@@ -299,13 +343,15 @@ class Canonicalizer:
         # an arbitrary ordering.  We could maybe pull graph dependencies for the ordering, but
         # it is unclear how to break cycles.
         self.expressions = sorted(self.expressions, key=self.expression_sort_key())
-        self.display_canonical_state('Stage 1: ')
+        if verbose:
+            self.display_canonical_state('Stage 1: ')
 
         # Give canonical numbers based on order of appearance.
         self.canonical_numeralize()
 
         self.expressions = sorted(self.expressions, key=self.expression_sort_key())
-        self.display_canonical_state('Stage 2: ')
+        if verbose:
+            self.display_canonical_state('Stage 2: ')
 
     def get_canonical_expression_id(self, expr: TokenExpression):
         nid = expr.base_node.node_id
@@ -332,6 +378,8 @@ class Canonicalizer:
             case DataBasicBlock() as bb:
                 cbb_id = self.canonical_block_ids.get(bb.block_id)
                 return "BLOCK" if cbb_id is None else f'BB{cbb_id}'
+            case float():
+                return f'float:{token}'
             case int():
                 return f'0x{token:x}'
             case str():
@@ -418,7 +466,6 @@ class Canonicalizer:
         return tokens
 
     def get_relevant_cfg_edges(self) -> list[ControlEdge]:
-
         block_ids = set(self.canonical_block_ids.keys())
 
         edges = []
@@ -578,6 +625,7 @@ class DataFlowILFunction:
         nids_in_slice = {start_nid}
         remaining_nodes = {start_nid}
         while remaining_nodes:
+
             nid = min(remaining_nodes)
             remaining_nodes.remove(nid)
 
@@ -598,12 +646,20 @@ class DataFlowILFunction:
                     continue
                 # if n.node_id in remaining_nodes:
                 #     continue
-                nids_in_slice.add(n.node_id)
+                # assert (n.node_id in self.all_nodes)
+                if n.node_id in self.all_nodes:
+                    nids_in_slice.add(n.node_id)
+                    if n.operation not in op_blacklist:
+                        remaining_nodes.add(n.node_id)
+                else:
+                    if verbosity >= 2:
+                        print(f'Node {n.node_id} not in all_nodes: {n.get_expression().get_text()}')
+
                 # We capture blacklisted nodes in the slice, but don't traverse their edges
 
                 # print(f'Node {n.node_id}  {"not " if n.operation not in op_blacklist else ""}in blacklist')
-                if n.operation not in op_blacklist:
-                    remaining_nodes.add(n.node_id)
+
+        assert (all(nid in self.all_nodes for nid in nids_in_slice))
         return nids_in_slice
 
     def expand_slice(self,
@@ -622,6 +678,8 @@ class DataFlowILFunction:
             nid = remaining_nids.pop()
             slice_nids = self._expand_slice(nid, op_blacklist)
             remaining_nids -= slice_nids
+
+            assert(all(nid in self.all_nodes for nid in slice_nids))
 
             data_slice = [self.all_nodes[nid] for nid in sorted(slice_nids)]
             slices.append(data_slice)
@@ -764,6 +822,13 @@ class ILParser:
         self.all_data_edges = []
 
     def _node(self, expr, operands: [], out_var=None):
+        if not all(operands):
+            print(f'ERROR - Node has null operands')
+            print(f'Expression: {expr}')
+            # print(f'Operands: {operands}')
+            return
+
+
         node_id = self.next_node_id
         self.next_node_id += 1
         dfil_op = get_dfil_op(expr)
@@ -844,13 +909,21 @@ class ILParser:
             case highlevelil.HighLevelILMemPhi() | highlevelil.HighLevelILVarDeclare() | highlevelil.HighLevelILNoret():
                 # These will be at the highest level, so we don't need to worry about returning None as an operand
                 node = None
+            case highlevelil.HighLevelILCase() as hlil_case:
+                assert(len(hlil_case.operands) == 1)
+                op1 = hlil_case.operands[0]
+                operands = [self._recurse(operand) for operand in op1]
+                node = self._node(expr, operands)
             case SSAVariable() as ssa:
                 node = self._var(ssa)
+            case highlevelil.HighLevelILGoto() | highlevelil.HighLevelILLabel():
+                # The goto is already represented by the basic block edges
+                node = None
+                raise Exception()
             case commonil.BaseILInstruction():
                 operands = [self._recurse(operand) for operand in expr.operands]
                 node = self._node(expr, operands)
             case _:
-                print(f'Type not handled: {type(expr)} for {expr}')
                 node = self._unimplemented(expr)
                 # node = self._node(expr, [])
 
@@ -866,6 +939,11 @@ class ILParser:
             dbb = self.il_bb_to_dbb[il_bb.index]
             self.current_data_bb = dbb
             for il_instr in il_bb:
+                match il_instr:
+                    case highlevelil.HighLevelILGoto() | highlevelil.HighLevelILLabel():
+                        # The goto is already represented by the basic block edges
+                        continue
+
                 self.current_base_instr = il_instr
                 dn = self._recurse(il_instr)
                 if dn:
@@ -919,7 +997,6 @@ def analyze_function(bv: binaryninja.BinaryView,
     print_dfil(dfil_fx)
 
     for block in parser.data_blocks:
-
         print(block.get_txt())
         for oe in block.edges_out:
             print(f'   {oe.edge_type.name:16} {oe.out_block.block_id} {oe.data_node.node_id if oe.data_node else ""}')
@@ -965,70 +1042,210 @@ def analyze_hlil_instruction(bv: binaryninja.BinaryView,
     else:
         print(f'Could not find instruction {ssa.instr_index} {ssa.expr_index}')
 
+def process_function(bv: binaryninja.BinaryView,
+                     fx: binaryninja.Function,
+                     output: Generator[None, dict, None]):
 
-def handle_function(bv: binaryninja.BinaryView,
-                    fx: binaryninja.Function):
+    if not fx:
+        print(f'Passed NULL function to process!')
+        return
+    if not fx.hlil:
+        print(f'HLIL is null for function {fx}')
+        return
 
     parser = ILParser()
     dfx: DataFlowILFunction = parser.parse(list(fx.hlil.ssa_form))
     #print_dfil(dfx)
 
-    for bb in dfx.basic_blocks:
-        in_edges, out_edges = dfx.get_bb_edges(bb)
-
-        in_txt = ','.join(f'{e.in_block.block_id}' for e in in_edges)
-        out_txt = ','.join(f'{e.out_block.block_id}{e.edge_type.short()}' for e in out_edges)
-
-        print(f'Block {bb.block_id}    {in_txt:10} {out_txt:10}')
-
-    for n in dfx.all_nodes.values():
-        dfx.print_verbose_node_line(n)
-
     partition = dfx.partition_basic_slices()
-    slice_objs = []
+
     for nodes in partition:
-
-        nids = set([n.node_id for n in nodes])
-        interior_edges = dfx.get_interior_edges(nids)
-
-        expressions = [n.get_expression() for n in nodes]
-
-        #data_slice = DataSlice(nodes, interior_edges, expressions)
-        #slice_objs.append(data_slice)
-
-        # s.display_verbose(dfx)
-
-        print('FOLDED: ********************')
-        #folded = fold_const(data_slice)
-        #folded.display_verbose(dfx)
         xslice = ExpressionSlice(nodes)
-        #xslice.fold_constants()
-        xslice.fold_const()
-        print(f'Nodes: {",".join(str(nid) for nid in nids)}')
-        xslice.fold_single_use()
-        xslice.display_verbose(dfx)
+        try:
+            xslice.fold_const()
+        except LimitExceededException:
+            pass
 
-        cexp = Canonicalizer(xslice, dfx.cfg)
-        #xslice.canonicalize()
+        try:
+            xslice.fold_single_use()
+        except LimitExceededException:
+            pass
 
-def main():
-    import argparse
+        canonical = Canonicalizer(xslice, dfx.cfg)
+        canonical_text = canonical.get_canonical_text()
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('binary')
-    parser.add_argument('--function', metavar='NAME', nargs='+')
+        slice_data = dict(
+            file=dict(
+                name=os.path.basename(bv.file.filename),
+                path=bv.file.filename,
+            ),
+            function=dict(
+                name=fx.name,
+                address=fx.start
+            ),
+            addressSet=sorted(xslice.getAddressSet()),
+            canonicalText=canonical_text,
+        )
+        output.send(slice_data)
 
-    args = parser.parse_args()
 
-    with binaryninja.open_view(args.binary) as bv:
-        print(f'bv has {len(bv.functions)} functions')
-        for fxname in args.function:
-            funcs = bv.get_functions_by_name(fxname)
-            funcs = [func for func in funcs if not func.is_thunk]
-            assert(len(funcs) == 1)
-            fx = funcs[0]
-            handle_function(bv, fx)
+def handle_function(bv: binaryninja.BinaryView,
+                    fx: binaryninja.Function):
+
+    display = display_json()
+    display.send(None)
+
+    process_function(bv, fx, display)
+
+
+def display_json():
+    try:
+        while True:
+            data = yield
+            print(json.dumps(data, indent=4, default=str))
+    finally:
+        print("Iteration stopped")
+
+
+def dump_cbor(out_fd):
+    try:
+        while True:
+            data = yield
+            out_fd.write(cbor2.dumps(data))
+    finally:
+        pass
+        #print("Iteration stopped")
+
+
+def handle_functions_by_name(bv: binaryninja.BinaryView,
+                             names: list[str],
+                             output: Generator[None, dict, None]):
+    for fxname in names:
+        funcs = bv.get_functions_by_name(fxname)
+        funcs = [func for func in funcs if not func.is_thunk]
+        assert (len(funcs) == 1)
+        fx = funcs[0]
+        process_function(bv, fx, output)
+
+
+def _handle_binary(args,
+                  binary_path: str,
+                  output: Generator[None, dict, None]):
+
+    with binaryninja.open_view(binary_path) as bv:
+        if verbosity >= 2:
+            print(f'bv has {len(bv.functions)} functions')
+        if args.function:
+            handle_functions_by_name(bv, args.function, output)
+        else:
+            for fx in bv.functions:
+                if verbosity >= 2:
+                    print(f'Analyzing {fx}')
+                process_function(bv, fx, output)
+
+class Main:
+    def __init__(self):
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('binary')
+        parser.add_argument('--function', metavar='NAME', nargs='+')
+        parser.add_argument('--db', default='flows.db', metavar='PATH', nargs='?')
+        parser.add_argument('--force-update', action='store_true')
+        parser.add_argument('--parallelism', metavar='N', type=int, default=1)
+        global files_processed
+        global total_files
+
+        self.args = parser.parse_args()
+        files_processed = Value('i', 0)
+        total_files = Value('i', 0)
+
+        if self.args.db:
+            os.makedirs(self.args.db, exist_ok=True)
+
+        global verbosity
+        verbosity = 1
+
+        if os.path.isdir(self.args.binary):
+            self.handle_folder()
+        else:
+            self.handle_binary(self.args.binary)
+
+    def set_vars(self, processed, total):
+        global files_processed
+        global total_files
+        files_processed = processed
+        total_files = total
+
+    def _handle_binary(self, binary_path: str):
+        out_path = os.path.join(self.args.db, os.path.basename(binary_path) + '.cbor')
+
+        if verbosity >= 1:
+            print(f'File {files_processed.value} of {total_files.value}: {binary_path}')
+
+        files_processed.value += 1
+
+        if verbosity >= 2:
+            print(f'Opening {binary_path}')
+        if verbosity >= 2:
+            print(f'Output: {out_path}')
+
+        if not self.args.force_update and os.path.exists(out_path):
+            return
+
+        with open(out_path, 'wb') as fd:
+            write_file = dump_cbor(fd)
+            write_file.send(None)
+
+            _handle_binary(self.args, binary_path, write_file)
+
+
+    def handle_binary(self, binary_path: str):
+        try:
+            self._handle_binary(binary_path)
+        except KeyboardInterrupt:
+            sys.exit(0)
+
+    def process_binaries_serially(self, file_paths):
+        print("PROCESSING SERIALLY")
+        files_processed.value = 0
+        total_files.value = len(file_paths)
+
+        for idx, path in enumerate(file_paths):
+            self.handle_binary(self.args, path)
+
+    def process_binaries_in_parallel(self, file_paths):
+        print("PROCESSING IN PARALLEL")
+        files_processed.value = 0
+        total_files.value = len(file_paths)
+        original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        pool = Pool(self.args.parallelism, initializer=self.set_vars, initargs=(files_processed, total_files))
+        signal.signal(signal.SIGINT, original_sigint)
+        try:
+            res = pool.map_async(self.handle_binary, file_paths)
+            print('Waiting for results')
+            res.get(60*60*24)
+        except KeyboardInterrupt:
+            print('GOT KEYBOARD INTERRUPT')
+            pool.terminate()
+        else:
+            print("Normal termination")
+            pool.close()
+        pool.join()
+
+
+    def handle_folder(self):
+        file_paths = []
+        for root, dirs, files in os.walk(self.args.binary):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_paths.append(file_path)
+
+        if self.args.parallelism <= 1:
+            self.process_binaries_serially(file_paths)
+        else:
+            self.process_binaries_in_parallel(file_paths)
 
 
 if __name__ == "__main__":
-    main()
+    Main()

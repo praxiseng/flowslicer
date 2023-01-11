@@ -142,6 +142,7 @@ class DataFlowILOperation(enum.Enum):
     DFIL_DECLARE_VAR = DataFlowOp(5)
     DFIL_PHI = DataFlowOp(6, prefix_formatter('\u03d5(', ',', ')'))
     DFIL_RET = DataFlowOp(7, prefix_formatter('ret '))
+    DFIL_CASE = DataFlowOp(8, prefix_formatter('case '))
     DFIL_ASSIGN = DataFlowOp(10, infix_formatter('=', use_paren=False))
     DFIL_INIT = DataFlowOp(11)
     DFIL_DEREF = DataFlowOp(12, prefix_formatter('#'))
@@ -236,6 +237,8 @@ hlil_to_dfil_operations = {
     HlilOp.HLIL_FLOAT_TO_INT: DataFlowILOperation.DFIL_FLOAT_TO_INT,
 
     HlilOp.HLIL_FTRUNC: DataFlowILOperation.DFIL_FTRUNC,
+
+    HlilOp.HLIL_CASE: DataFlowILOperation.DFIL_CASE,
 
     # TODO: need to distinguish multiple output flow direction
     HlilOp.HLIL_SPLIT: DataFlowILOperation.DFIL_SPLIT,

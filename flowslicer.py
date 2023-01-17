@@ -824,8 +824,8 @@ class ILParser:
     def _node(self, expr, operands: [], out_var=None):
         if not all(operands):
             print(f'ERROR - Node has null operands')
-            print(f'Expression: {expr}')
-            # print(f'Operands: {operands}')
+            print(f'Expression: {expr.address:x} {expr}')
+            print(f'Operands: {operands}')
             return
 
 
@@ -848,10 +848,10 @@ class ILParser:
 
         return dn
 
-    def _unimplemented(self, expr):
+    def _unimplemented(self, expr, operands):
         node_id = self.next_node_id
         self.next_node_id += 1
-        return DataNode(self.current_base_instr, expr, [], node_id,
+        return DataNode(self.current_base_instr, expr, operands, node_id,
                         self.current_data_bb.block_id,
                         DataFlowILOperation.DFIL_UNKNOWN)
 
@@ -906,6 +906,8 @@ class ILParser:
                 node = self._node(expr, operands, tailcall.dest)
             case highlevelil.HighLevelILDerefSsa() as deref_ssa:
                 node = self._node(expr, [self._recurse(deref_ssa.src)])
+            case highlevelil.HighLevelILDerefFieldSsa() as deref_field_ssa:
+                node = self._node(expr, [self._recurse(deref_field_ssa.src)])
             case highlevelil.HighLevelILMemPhi() | highlevelil.HighLevelILVarDeclare() | highlevelil.HighLevelILNoret():
                 # These will be at the highest level, so we don't need to worry about returning None as an operand
                 node = None
@@ -920,10 +922,35 @@ class ILParser:
                 # The goto is already represented by the basic block edges
                 node = None
                 raise Exception()
+            case highlevelil.HighLevelILWhileSsa() | highlevelil.HighLevelILDoWhileSsa():
+                # TODO: check that the block in the first operand gets processed
+                operands = [self._recurse(operand) for operand in expr.operands[1:]]
+                node = self._node(expr, operands)
             case commonil.BaseILInstruction():
                 operands = [self._recurse(operand) for operand in expr.operands]
                 node = self._node(expr, operands)
+            case list():
+                operands = [self._recurse(operand) for operand in expr]
+
+                assert(all(operands))
+                node = self._node(expr, operands)
+            case binaryninja.lowlevelil.ILIntrinsic() as intrinsic:
+                iname = self._var(str(intrinsic.name))
+                try:
+                    outputs = self._recurse(intrinsic.outputs)
+                except:
+                    outputs = []
+                try:
+                    inputs = self._recurse(intrinsic.inputs)
+                except:
+                    inputs = []
+                #operands = [iname, outputs, inputs]
+                operands = [iname] + inputs
+                node = self._node(expr, operands)
             case _:
+                if verbosity >= 1:
+                    print(f'{self.current_base_instr.address:x} Unimplemented: {expr}, in {self.current_base_instr}')
+                    print(f'{type(expr)}')
                 node = self._unimplemented(expr)
                 # node = self._node(expr, [])
 
@@ -1212,7 +1239,7 @@ class Main:
         total_files.value = len(file_paths)
 
         for idx, path in enumerate(file_paths):
-            self.handle_binary(self.args, path)
+            self.handle_binary(path)
 
     def process_binaries_in_parallel(self, file_paths):
         print("PROCESSING IN PARALLEL")

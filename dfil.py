@@ -143,6 +143,8 @@ class DataFlowILOperation(enum.Enum):
     DFIL_PHI = DataFlowOp(6, prefix_formatter('\u03d5(', ',', ')'))
     DFIL_RET = DataFlowOp(7, prefix_formatter('ret '))
     DFIL_CASE = DataFlowOp(8, prefix_formatter('case '))
+    DFIL_WHILE = DataFlowOp(9, prefix_formatter('while '))
+
     DFIL_ASSIGN = DataFlowOp(10, infix_formatter('=', use_paren=False))
     DFIL_INIT = DataFlowOp(11)
     DFIL_DEREF = DataFlowOp(12, prefix_formatter('#'))
@@ -182,6 +184,10 @@ class DataFlowILOperation(enum.Enum):
 
     DFIL_SPLIT = DataFlowOp(60, prefix_formatter('', ':'))
     DFIL_ADDRESS_OF = DataFlowOp(61, prefix_formatter('&'))
+
+
+    DFIL_INTRINSIC = DataFlowOp(98, prefix_formatter('intrinsic(', '', ')'))
+    DFIL_PACK_LIST = DataFlowOp(99, prefix_formatter('PACK[', ',', ']'))
 
     def format(self, operands: list[str]) -> str:
         if self.value.formatter:
@@ -244,6 +250,7 @@ hlil_to_dfil_operations = {
     HlilOp.HLIL_SPLIT: DataFlowILOperation.DFIL_SPLIT,
     HlilOp.HLIL_ADDRESS_OF: DataFlowILOperation.DFIL_ADDRESS_OF,
 
+    HlilOp.HLIL_WHILE_SSA: DataFlowILOperation.DFIL_WHILE
 
 }
 
@@ -256,6 +263,8 @@ def get_dfil_op(expr):
             return DataFlowILOperation.DFIL_DECLARE_VAR
         case highlevelil.HighLevelILInstruction() as instr if instr.operation in hlil_to_dfil_operations:
             return hlil_to_dfil_operations[instr.operation]
+        case list():
+            return DataFlowILOperation.DFIL_PACK_LIST
         case _:
             return DataFlowILOperation.DFIL_UNKNOWN
 

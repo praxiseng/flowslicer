@@ -140,7 +140,22 @@ class Main:
 
     def search(self):
         for path in self.args.files:
-            self.search_file(path)
+            match_results = self.search_file(path)
+            # match_results = sorted(match_results, key=lambda result:result['thisFile']['funcNames'])
+
+            match_results = sorted(match_results,
+                                   key=lambda result:
+                                   (result['otherFiles']['fileCount'],
+                                    result['otherFiles']['fileNames'],
+                                    )
+                                   )
+
+            filter_match_results = [result for result in match_results if len(result['canonicalText'].split('\n')) > 5]
+            self.display_search_results(filter_match_results)
+
+            self.summarize_match_sets(match_results)
+
+
 
 
     def read_db_header(self):
@@ -156,6 +171,66 @@ class Main:
             except cbor2.CBORDecodeEOF:
                 pass
 
+    def summarize_match_sets(self, match_results):
+        groups = []
+        for matchSetHash, group in itertools.groupby(match_results, key=lambda x:x['otherFiles']['matchSetHash']):
+            group = list(group)
+            otherFiles = group[0]['otherFiles']
+            fids = otherFiles['fileIDs']
+            fileNames = otherFiles['fileNames']
+            groups.append((matchSetHash, fids, fileNames, group))
+
+        groups = sorted(groups, key=lambda x: (len(x[3]), x[2]))
+        for matchSetHash, fids, fileNames, matchResults in groups[-50:]:
+            names = (' '.join(fileNames))[:150]
+            print(f'{len(matchResults):6} {len(fids):3} {names:100}')
+
+            '''
+            for result in matchResults[:5]:
+                canonicalText = result['canonicalText']
+
+                n_lines = len(canonicalText.split('\n'))
+                dfil_summary = canonicalText.replace('DFIL_', '').replace('DECLARE_', '').replace('\n', '  ')
+                print(f'     DFIL {n_lines:3} {dfil_summary[:100]}')
+            '''
+
+    def display_search_results(self, match_results):
+        for result in match_results:
+            sliceHash = result['hash']
+            thisFile = result['thisFile']
+            otherFiles = result['otherFiles']
+            canonicalText = result['canonicalText']
+
+            fileCount = otherFiles['fileCount']
+            funcCount = otherFiles['funcCount']
+            instanceCount = otherFiles['instanceCount']
+            fileIDs = otherFiles['fileIDs']
+            fileNames = otherFiles['fileNames']
+
+            funcNames = thisFile['funcNames']
+            addressSet = thisFile['allAddresses']
+
+            func_name_txt = ",".join(funcNames)[:30]
+
+            count_txt = f'{fileCount:4} {funcCount:6} {instanceCount:6} '
+            count_txt += f'{len(funcNames):4} '
+
+            dfil_exprs = canonicalText.split('\n')
+
+            addrSetText = ','.join(f'{addr:x}' for addr in sorted(addressSet))[:30]
+
+
+            file_name_txt = ' '.join(sorted(fileNames))[:50]
+
+            dfil_summary = '  '.join(dfil_exprs).replace('DFIL_', '').replace('DECLARE_', '')
+
+            print(f'{btoh(sliceHash)} {count_txt} {func_name_txt:30}  ' +
+                  f'{len(fileNames):5} {file_name_txt:50}  ' +
+                  f'{len(addressSet):3} {addrSetText:30}  ' +
+                  f'{len(dfil_exprs):3} {dfil_summary[:100]}')
+            #print(ctext)
+
+
     def search_file(self, path):
         header, hash_data = load_cbor_file(path, include_detail=True)
         self.read_db_header()
@@ -166,38 +241,53 @@ class Main:
             file['id']: file['path'] for file in self.db_header['files']
         }
         print(f'hash_data = {str(hash_data)[:100]}')
+        match_results = []
         for slice_hash, group in itertools.groupby(hash_data, key=lambda x:x[0]):
-
             group = list(group)
+
+            # Advance DB cursor until its hash is not less than the slice hash
             while h < slice_hash:
                 h, fileCount, funcCount, instCount, fids = next(db_stream)
 
             if h != slice_hash:
                 continue
 
-            func_names = [line['function']['name'] for _, line in group]
-            func_name_txt = ",".join(func_names)[:30]
-
-            count_txt = f'{fileCount:4} {funcCount:5} {instCount:5} {len(func_names):3}'
-            addressSet = set()
+            # Combine the list of this file's addresses
+            allAddresses = set()
             for _, line in group:
                 aset = line['addressSet']
-                addressSet |= set(line['addressSet'])
+                allAddresses |= set(line['addressSet'])
 
-            ctext = group[0][1]['canonicalText']
-            dfil_exprs = ctext.split('\n')
+            funcAddresses = [
+                dict(
+                    funcName = line['function']['name'],
+                    addressSet = sorted(line['addressSet'])
+                )
+            ]
 
-            paths = [fid_lookup[fid] for fid in fids]
-            file_names = [os.path.basename(path) for path in paths]
-            file_name_txt = ' '.join(sorted(file_names))[:50]
+            matchSetHash = md5(','.join(str(fid) for fid in fids).encode('ascii'))
 
-            addrSetText = ','.join(f'{addr:x}' for addr in sorted(addressSet))[:30]
+            result = dict(
+                hash=slice_hash,
+                canonicalText=group[0][1]['canonicalText'],
+                thisFile=dict(
+                    funcNames=sorted([line['function']['name'] for _, line in group]),
+                    allAddresses=sorted(allAddresses),
+                    funcAddresses=funcAddresses,
+                ),
+                otherFiles=dict(
+                    fileCount=fileCount,
+                    funcCount=funcCount,
+                    instanceCount=instCount,
+                    fileIDs=fids,
+                    matchSetHash=matchSetHash,
+                    fileNames=[os.path.basename(fid_lookup[fid]) for fid in fids],
+                )
+            )
+            match_results.append(result)
+        return match_results
 
-            print(f'{btoh(slice_hash)} {count_txt} {func_name_txt:30}  ' +
-                  f'{len(addressSet):3} {addrSetText:30}  ' +
-                  f'{len(file_names):4} {file_name_txt:50}  ' +
-                  f'{len(dfil_exprs):2} {dfil_exprs[0][:100]}')
-            #print(ctext)
+
 
 
     def ingest_files(self):

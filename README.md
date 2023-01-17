@@ -4,11 +4,6 @@
 Flowslicer extracts data flow slices from binaries.  It can then ingest them into a database, then compare them with
 match set analysis.
 
-
-
-# Command Line
-
-
 ## Prerequisites
 
 A Binary Ninja license with "GUI-less processing" is needed to run the command line.  There are plans to make it
@@ -19,6 +14,7 @@ implemented.
 ## Flowslicer.py
 
 
+```
 usage: flowslicer.py [-h] [--function NAME [NAME ...]] [--db [PATH]] [--force-update] [--parallelism N] binary
 
 positional arguments:
@@ -30,7 +26,7 @@ options:
   --output [PATH]
   --force-update
   --parallelism N
-
+```
 
 Flowslicer will produce a .cbor file for each parsed binary.  These .cbor files will be placed in the folder specified
 by --db.
@@ -41,7 +37,7 @@ These .cbor files can then be processed and combined into a single database file
 ## db.py
 
 
-
+```
 usage: db.py [-h] [--db [PATH]] [-s] [files ...]
 
 positional arguments:
@@ -51,6 +47,7 @@ options:
   -h, --help    show this help message and exit
   --db [PATH]
   -s, --search
+```
 
 
 The default mode for db.py processes .cbor files and combines them into an output file specified by --db.  Then db.py

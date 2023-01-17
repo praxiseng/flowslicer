@@ -13,16 +13,15 @@ import binaryninja.highlevelil
 from binaryninja.mediumlevelil import SSAVariable
 from binaryninja import flowgraph, BranchType, HighLevelILOperation
 
+from collections.abc import Mapping
 from dfil import DataNode, DataFlowEdge, TokenExpression
-verbosity = 1
-
 
 try:
     from .dfil import *
 except ImportError:
     from dfil import *
-from collections.abc import Mapping
 
+verbosity = 1
 
 class DFILCFG:
     def __init__(self,
@@ -198,7 +197,7 @@ class ExpressionSlice:
         return address_set
 
     def fold_expression(self, expr):
-        ''' For every use, embed a copy of the current expression, but with incoming ExpressionEdges
+        """ For every use, embed a copy of the current expression, but with incoming ExpressionEdges
             substituted
 
             For example:
@@ -211,7 +210,7 @@ class ExpressionSlice:
 
                30: DFIL_DEREF(DFIL_ADD(10->30, 11->30))
 
-        '''
+        """
 
         self._limit_count('fold_expression')
         # note: cannot clean incoming edges in bypass_edges because it is used multiple times.
@@ -1177,7 +1176,7 @@ class Main:
         parser = argparse.ArgumentParser()
         parser.add_argument('binary')
         parser.add_argument('--function', metavar='NAME', nargs='+')
-        parser.add_argument('--db', default='flows.db', metavar='PATH', nargs='?')
+        parser.add_argument('--output', default='data_flow_slices_cbor', metavar='PATH', nargs='?')
         parser.add_argument('--force-update', action='store_true')
         parser.add_argument('--parallelism', metavar='N', type=int, default=1)
         global files_processed
@@ -1187,8 +1186,8 @@ class Main:
         files_processed = Value('i', 0)
         total_files = Value('i', 0)
 
-        if self.args.db:
-            os.makedirs(self.args.db, exist_ok=True)
+        if self.args.output:
+            os.makedirs(self.args.output, exist_ok=True)
 
         global verbosity
         verbosity = 1
@@ -1205,7 +1204,7 @@ class Main:
         total_files = total
 
     def _handle_binary(self, binary_path: str):
-        out_path = os.path.join(self.args.db, os.path.basename(binary_path) + '.cbor')
+        out_path = os.path.join(self.args.output, os.path.basename(binary_path) + '.cbor')
 
         if verbosity >= 1:
             print(f'File {files_processed.value} of {total_files.value}: {binary_path}')

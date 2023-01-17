@@ -1,23 +1,23 @@
 
-Flowslicer
-==========
+# Flowslicer
 
-Flowslicer extracts data flow slices from binaries.  It can then ingest them into a database, then compare them with match set analysis.
-
-
-
-Command Line
-============
+Flowslicer extracts data flow slices from binaries.  It can then ingest them into a database, then compare them with
+match set analysis.
 
 
-Prerequisites
--------------
 
-A Binary ninja with "GUI-less processing" is needed to run the command line.  There are plans to make it avaliable purely through the plug-in interface to allow non-commercial users to use this tool, but that is not yet implemented.
+# Command Line
 
 
-Flowslicer.py
--------------
+## Prerequisites
+
+A Binary Ninja license with "GUI-less processing" is needed to run the command line.  There are plans to make it
+available purely through the plug-in interface to allow non-commercial users to use this tool, but that is not yet
+implemented.
+
+
+## Flowslicer.py
+
 
 usage: flowslicer.py [-h] [--function NAME [NAME ...]] [--db [PATH]] [--force-update] [--parallelism N] binary
 
@@ -27,18 +27,19 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --function NAME [NAME ...]
-  --db [PATH]
+  --output [PATH]
   --force-update
   --parallelism N
 
 
-Flowslicer will produce a .cbor file for each parsed binary.  These .cbor files will be placed in the folder specified by --db.  
+Flowslicer will produce a .cbor file for each parsed binary.  These .cbor files will be placed in the folder specified
+by --db.
 
 These .cbor files can then be processed and combined into a single database file using the db.py script.
 
 
-db.py
------
+## db.py
+
 
 
 usage: db.py [-h] [--db [PATH]] [-s] [files ...]
@@ -52,19 +53,35 @@ options:
   -s, --search
 
 
-The default mode for db.py processes .cbor files and combines them into an output file specified by --db.  Then db.py can be used in search mode with -s. 
+The default mode for db.py processes .cbor files and combines them into an output file specified by --db.  Then db.py
+can be used in search mode with -s.
 
-I know it's confusing to have --db in flowslicer.py refer to a folder of .cbor files whereas db.py's --db argument refers to a combined database file (with whatever extension you want).  This will be fixed eventually.
-
-In search mode, specify an input database with --db, and a query binary as a positional argument.  This will slice data flows, query the database, and perform match set analysis on the results.
-
-
-Example Usage
--------------
-
-These examples are done with PowerShell.  Hence \ is not an escape character.
+In search mode, specify an input database with --db, and a query binary as a positional argument.  This will slice
+data flows, query the database, and perform match set analysis on the results.
 
 
-> py .\flowslicer.py sample_binaries\win_sys\ --db win_sys.db --parallelism 20
+## Example Usage
 
-This command will create a folder called `win_sys.db`
+Note: These examples are done with PowerShell.  Hence, \ is not an escape character.
+
+> py .\flowslicer.py sample_binaries\linux_bin\ --db linux_bin_cbor --parallelism 20
+
+This command will process all executables in the sample_binaries\linux_bin folder,  create a folder called
+`linux_bin_cbor`, and generate one .cbor for each binary in that folder.  This process can take a long time.
+--parallelism 20 will spin up 20 instances to load the cores.  An Intel 12700H processor (14C 20T) will be able to
+process 900 linux /usr/bin files in about 90 minutes.
+
+> py .\db.py --db linux_bin.db linux_bin_cbor
+
+This command will process the win_sys_db database of CBOR files and summarize into a win_sys.db file.  It will hash
+slice text, then store compact summaries that include the following details:
+
+ * Slice hash
+ * Count of files, functions, and instances of the slice
+ * The list of files with that slice
+
+ > py .\db.py --db linux_bin.db --search linux_bin_cbor\ls.cbor
+
+ This command queries the processed database linux_bin.db with the linux_bin_cbor\ls.cbor CBOR file.  To create a cbor
+ file on a new executable, run the flowslicer.py script on the new file.  db.py in search mode will summarize
+ the match set output.

@@ -1,13 +1,12 @@
 import json
 import os.path
-import signal
 import sys
 
-import cbor2
 from collections import defaultdict
 from typing import List, Generator
 
 from multiprocessing import Pool, Value, Process, Queue
+import cbor2
 
 import binaryninja.highlevelil
 from binaryninja.mediumlevelil import SSAVariable
@@ -1135,16 +1134,6 @@ def display_json():
         print("Iteration stopped")
 
 
-def dump_cbor(out_fd):
-    try:
-        while True:
-            data = yield
-            out_fd.write(cbor2.dumps(data))
-    finally:
-        pass
-        #print("Iteration stopped")
-
-
 def handle_functions_by_name(args,
                              bv: binaryninja.BinaryView,
                              names: list[str],
@@ -1171,6 +1160,39 @@ def _handle_binary(args,
                 if verbosity >= 2:
                     print(f'Analyzing {fx}')
                 process_function(args, bv, fx, output)
+
+class Logger:
+    def __init__(self, output_streams, current_file_path):
+        self.output_streams = output_streams
+        self.current_file_path = current_file_path
+
+    def write(self, buf):
+        if not self.output_streams:
+            return
+        file_name = os.path.basename(self.current_file_path)
+        for line in buf.rstrip().splitlines():
+            txt = f'{file_name:20}{line}'
+            for stream in self.output_streams:
+                print(txt, file=stream)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+    def closed(self):
+        return False
+
+
+def dump_cbor(out_fd):
+    try:
+        while True:
+            data = yield
+            out_fd.write(cbor2.dumps(data))
+    finally:
+        pass
+        #print("Iteration stopped")
 
 class Main:
     def __init__(self):
@@ -1212,11 +1234,15 @@ class Main:
         files_processed = processed
         total_files = total
 
+    def get_output_path(self, input_path, extension):
+        return os.path.join(self.args.output, os.path.basename(input_path) + extension)
+
     def _handle_binary(self, binary_path: str):
-        out_path = os.path.join(self.args.output, os.path.basename(binary_path) + '.cbor')
+        out_path = self.get_output_path(binary_path, '.temp')
+        final_path = self.get_output_path(binary_path, '.cbor')
 
         if verbosity >= 1:
-            print(f'File {files_processed.value} of {total_files.value}: {binary_path}')
+            print(f'File {files_processed.value+1} of {total_files.value}: {binary_path}')
 
         files_processed.value += 1
 
@@ -1225,14 +1251,19 @@ class Main:
         if verbosity >= 2:
             print(f'Output: {out_path}')
 
-        if not self.args.force_update and os.path.exists(out_path):
-            return
+        if os.path.exists(final_path):
+            if self.args.force_update:
+                os.remove(final_path)
+            else:
+                return
 
         with open(out_path, 'wb') as fd:
             write_file = dump_cbor(fd)
             write_file.send(None)
 
             _handle_binary(self.args, binary_path, write_file)
+
+        os.replace(out_path, final_path)
 
     def handle_binary(self, binary_path: str):
         try:
@@ -1249,35 +1280,47 @@ class Main:
             self.handle_binary(path)
 
     def process_queue(self, paths: Queue, results: Queue, files_processed, total_files):
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
         self.set_vars(files_processed, total_files)
+        binaryninja.disable_default_log()
         while True:
             path = paths.get()
             if path is None:
                 break
-            # results.put(dict(processing=path))
-            self.handle_binary(path)
+            log_path = self.get_output_path(path, '.log')
+            with open(log_path, 'w') as log_fd:
+                sys.stdout = Logger([original_stdout], path)
+                sys.stderr = Logger([original_stderr], path)
+                binaryninja.log.log_to_file(binaryninja.log.LogLevel.WarningLog, log_path, False)
+                # results.put(dict(processing=path))
+                self.handle_binary(path)
 
     def process_binaries_in_parallel(self, file_paths):
-        print("PROCESSING IN PARALLEL")
         files_processed.value = 0
         total_files.value = len(file_paths)
 
         pathQueue = Queue()
         resultQueue = Queue()
         procs = []
-        for _ in range(self.args.parallelism):
-            proc = Process(target=self.process_queue, args=(pathQueue, resultQueue, files_processed, total_files))
-            procs.append(proc)
-            proc.start()
 
-        for path in file_paths:
-            pathQueue.put(path)
+        try:
+            for _ in range(self.args.parallelism):
+                proc = Process(target=self.process_queue, args=(pathQueue, resultQueue, files_processed, total_files))
+                procs.append(proc)
+                proc.start()
 
-        for _ in range(self.args.parallelism):
-            pathQueue.put(None)
+            for path in file_paths:
+                pathQueue.put(path)
 
-        for proc in procs:
-            proc.join()
+            for _ in range(self.args.parallelism):
+                pathQueue.put(None)
+
+            for proc in procs:
+                proc.join()
+        except KeyboardInterrupt:
+            for proc in procs:
+                proc.terminate()
 
     def handle_folder(self):
         file_paths = []

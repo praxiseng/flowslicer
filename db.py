@@ -230,7 +230,6 @@ class Main:
                   f'{len(dfil_exprs):3} {dfil_summary[:100]}')
             #print(ctext)
 
-
     def search_file(self, path):
         header, hash_data = load_cbor_file(path, include_detail=True)
         self.read_db_header()
@@ -287,11 +286,7 @@ class Main:
             match_results.append(result)
         return match_results
 
-
-
-
     def ingest_files(self):
-
         for path in self.args.files:
             if os.path.isdir(path):
                 self.process_folder(path)
@@ -371,8 +366,6 @@ class Main:
                 cbor2.dump(item, fd)
                 n_written += 1
         return n_written
-
-
 
 
 if __name__ == "__main__":

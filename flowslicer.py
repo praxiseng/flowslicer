@@ -123,31 +123,8 @@ class ExpressionSlice:
                 print(f'  {name:20} {count}')
             raise LimitExceededException()
 
-
     def fold_node(self, node_id):
         assert(node_id in self.xmap)
-
-    def fold_constants(self):
-        self._limit_count('fold_constants')
-        new_expressions = []
-        for expr in self.expressions:
-            if expr.base_node.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
-                continue
-            new_expressions.append(expr)
-            for index, token in enumerate(expr.tokens):
-                match token:
-                    case DataNode() as dn:
-                        if dn.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
-                            expr.tokens[index] = dn.il_expr
-                            try:
-                                self.input_nodes.remove(dn.node_id)
-                            except KeyError:
-                                pass
-                    case ExpressionEdge() as ee:
-                        in_expr: TokenExpression = ee.in_expr
-                        if in_expr.base_node.operation == DataFlowILOperation.DFIL_DECLARE_CONST:
-                            expr.tokens[index] = in_expr.base_node.il_expr
-        self.expressions = new_expressions
 
     def bypass_edges(self, current_expr, out_expr):
         ''' Creates a new token list bypassing the current expression.
@@ -166,7 +143,6 @@ class ExpressionSlice:
             # print(f'\nTokenA {in_edge.in_expr.base_node.node_id:2} {in_edge.in_expr.get_text()}')
             # print(f'TokenB {expr.base_node.node_id:2} {expr.get_text()}')
             # print(f'TokenC {out_edge.out_expr.base_node.node_id:2} {out_edge.out_expr.get_text()}')
-
 
             new_edge = ExpressionEdge(in_edge.in_expr, out_expr)
             for index, token in enumerate(current_expr.tokens):
@@ -408,7 +384,6 @@ class Canonicalizer:
 
         return tokens
 
-
     def expression_sort_key(self):
         def expression_sort_key_fx(expr: TokenExpression):
             key = []
@@ -508,8 +483,6 @@ class Canonicalizer:
         print(self.get_simple_canonical_text())
 
 
-
-
 def fold_const(data_slice: DataSlice) -> DataSlice:
     const_node_nids = [n.node_id for n in data_slice.nodes if n.operation == DataFlowILOperation.DFIL_DECLARE_CONST]
     new_nodes: list[DataNode] = [n for n in data_slice.nodes if n.operation != DataFlowILOperation.DFIL_DECLARE_CONST]
@@ -531,6 +504,7 @@ def fold_const(data_slice: DataSlice) -> DataSlice:
     return DataSlice(new_nodes, new_edges, new_expressions)
 
 
+# These ops define partition boundaries.
 DEFAULT_SLICING_BLACKLIST=\
     frozenset({
         DataFlowILOperation.DFIL_CALL,
@@ -1068,7 +1042,8 @@ def analyze_hlil_instruction(bv: binaryninja.BinaryView,
     else:
         print(f'Could not find instruction {ssa.instr_index} {ssa.expr_index}')
 
-def process_function(bv: binaryninja.BinaryView,
+def process_function(args,
+                     bv: binaryninja.BinaryView,
                      fx: binaryninja.Function,
                      output: Generator[None, dict, None]):
 
@@ -1084,9 +1059,15 @@ def process_function(bv: binaryninja.BinaryView,
     #print_dfil(dfx)
 
     partition = dfx.partition_basic_slices()
+    if verbosity >= 3:
+        print(f'Function has {len(partition):3} partitions {fx}')
 
     for nodes in partition:
         xslice = ExpressionSlice(nodes)
+        if verbosity >= 3:
+            print('Expression Slice:')
+            xslice.display_verbose(dfx)
+
         try:
             xslice.fold_const()
         except LimitExceededException:
@@ -1099,6 +1080,9 @@ def process_function(bv: binaryninja.BinaryView,
 
         canonical = Canonicalizer(xslice, dfx.cfg)
         canonical_text = canonical.get_canonical_text()
+        if verbosity >= 3:
+            print(f'Canonical text\n{canonical_text}')
+
 
         slice_data = dict(
             file=dict(
@@ -1115,13 +1099,14 @@ def process_function(bv: binaryninja.BinaryView,
         output.send(slice_data)
 
 
-def handle_function(bv: binaryninja.BinaryView,
+def handle_function(args,
+                    bv: binaryninja.BinaryView,
                     fx: binaryninja.Function):
 
     display = display_json()
     display.send(None)
 
-    process_function(bv, fx, display)
+    process_function(args, bv, fx, display)
 
 
 def display_json():
@@ -1143,7 +1128,8 @@ def dump_cbor(out_fd):
         #print("Iteration stopped")
 
 
-def handle_functions_by_name(bv: binaryninja.BinaryView,
+def handle_functions_by_name(args,
+                             bv: binaryninja.BinaryView,
                              names: list[str],
                              output: Generator[None, dict, None]):
     for fxname in names:
@@ -1151,23 +1137,23 @@ def handle_functions_by_name(bv: binaryninja.BinaryView,
         funcs = [func for func in funcs if not func.is_thunk]
         assert (len(funcs) == 1)
         fx = funcs[0]
-        process_function(bv, fx, output)
+        process_function(args, bv, fx, output)
 
 
 def _handle_binary(args,
-                  binary_path: str,
-                  output: Generator[None, dict, None]):
+                   binary_path: str,
+                   output: Generator[None, dict, None]):
 
     with binaryninja.open_view(binary_path) as bv:
         if verbosity >= 2:
             print(f'bv has {len(bv.functions)} functions')
         if args.function:
-            handle_functions_by_name(bv, args.function, output)
+            handle_functions_by_name(args, bv, args.function, output)
         else:
             for fx in bv.functions:
                 if verbosity >= 2:
                     print(f'Analyzing {fx}')
-                process_function(bv, fx, output)
+                process_function(args, bv, fx, output)
 
 class Main:
     def __init__(self):
@@ -1179,18 +1165,19 @@ class Main:
         parser.add_argument('--output', default='data_flow_slices_cbor', metavar='PATH', nargs='?')
         parser.add_argument('--force-update', action='store_true')
         parser.add_argument('--parallelism', metavar='N', type=int, default=1)
+        parser.add_argument('-v', '--verbose', action='count', default=0)
+        global verbosity
         global files_processed
         global total_files
 
         self.args = parser.parse_args()
+
+        verbosity = self.args.verbose
         files_processed = Value('i', 0)
         total_files = Value('i', 0)
 
         if self.args.output:
             os.makedirs(self.args.output, exist_ok=True)
-
-        global verbosity
-        verbosity = 1
 
         if os.path.isdir(self.args.binary):
             self.handle_folder()
@@ -1224,7 +1211,6 @@ class Main:
             write_file.send(None)
 
             _handle_binary(self.args, binary_path, write_file)
-
 
     def handle_binary(self, binary_path: str):
         try:

@@ -123,6 +123,10 @@ class ExpressionSlice:
                 print(f'  {name:20} {count}')
             raise LimitExceededException()
 
+    def remove_ints(self, min_value=0x1000):
+        for expression in self.expressions:
+            expression.remove_ints(min_value)
+
     def fold_node(self, node_id):
         assert(node_id in self.xmap)
 
@@ -1063,40 +1067,53 @@ def process_function(args,
         print(f'Function has {len(partition):3} partitions {fx}')
 
     for nodes in partition:
-        xslice = ExpressionSlice(nodes)
-        if verbosity >= 3:
-            print('Expression Slice:')
-            xslice.display_verbose(dfx)
+        option_set_texts = []
+        for option in args.option_permutations:
+            xslice = ExpressionSlice(nodes)
+            if verbosity >= 4:
+                print('Expression Slice:')
+                xslice.display_verbose(dfx)
 
-        try:
-            xslice.fold_const()
-        except LimitExceededException:
-            pass
+            if option.get('removeInt', None) is not None:
+                xslice.remove_ints(option['removeInt'])
 
-        try:
-            xslice.fold_single_use()
-        except LimitExceededException:
-            pass
+            try:
+                xslice.fold_const()
+            except LimitExceededException:
+                pass
 
-        canonical = Canonicalizer(xslice, dfx.cfg)
-        canonical_text = canonical.get_canonical_text()
-        if verbosity >= 3:
-            print(f'Canonical text\n{canonical_text}')
+            try:
+                xslice.fold_single_use()
+            except LimitExceededException:
+                pass
 
+            canonical = Canonicalizer(xslice, dfx.cfg)
+            canonical_text = canonical.get_canonical_text()
 
-        slice_data = dict(
-            file=dict(
-                name=os.path.basename(bv.file.filename),
-                path=bv.file.filename,
-            ),
-            function=dict(
-                name=fx.name,
-                address=fx.start
-            ),
-            addressSet=sorted(xslice.getAddressSet()),
-            canonicalText=canonical_text,
-        )
-        output.send(slice_data)
+            if canonical_text in option_set_texts:
+                # Same slice was produced with a different option set
+                # No need to duplicate
+                continue
+
+            if verbosity >= 3:
+                print(f'Canonical text\n{canonical_text}')
+
+            slice_data = dict(
+                option=option,
+                file=dict(
+                    name=os.path.basename(bv.file.filename),
+                    path=bv.file.filename,
+                ),
+                function=dict(
+                    name=fx.name,
+                    address=fx.start
+                ),
+                addressSet=sorted(xslice.getAddressSet()),
+                canonicalText=canonical_text,
+            )
+
+            option_set_texts.append(canonical_text)
+            output.send(slice_data)
 
 
 def handle_function(args,
@@ -1171,6 +1188,11 @@ class Main:
         global total_files
 
         self.args = parser.parse_args()
+
+        self.args.option_permutations = [
+            dict(removeInt=0x1000),
+            dict(),
+        ]
 
         verbosity = self.args.verbose
         files_processed = Value('i', 0)

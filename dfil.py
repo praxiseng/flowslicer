@@ -59,6 +59,14 @@ class TokenExpression:
                     tokens.append(str(tok))
         return "".join(tokens)
 
+    def remove_ints(self, min_value=0x1000):
+        """ Remove all integer constants greater than or equal to min_value and replace them with "_" """
+        for index, token in enumerate(self.tokens):
+            match token:
+                case int():
+                    if token >= min_value:
+                        self.tokens[index]='_'
+
     def get_short_text(self):
         tokens = []
         for tok in self.tokens:

@@ -7,7 +7,7 @@ import cbor2
 from collections import defaultdict
 from typing import List, Generator
 
-from multiprocessing import Pool, Value
+from multiprocessing import Pool, Value, Process, Queue
 
 import binaryninja.highlevelil
 from binaryninja.mediumlevelil import SSAVariable
@@ -1190,8 +1190,8 @@ class Main:
         self.args = parser.parse_args()
 
         self.args.option_permutations = [
-            dict(removeInt=0x1000),
             dict(),
+            dict(removeInt=0x1000),
         ]
 
         verbosity = self.args.verbose
@@ -1248,25 +1248,36 @@ class Main:
         for idx, path in enumerate(file_paths):
             self.handle_binary(path)
 
+    def process_queue(self, paths: Queue, results: Queue, files_processed, total_files):
+        self.set_vars(files_processed, total_files)
+        while True:
+            path = paths.get()
+            if path is None:
+                break
+            # results.put(dict(processing=path))
+            self.handle_binary(path)
+
     def process_binaries_in_parallel(self, file_paths):
         print("PROCESSING IN PARALLEL")
         files_processed.value = 0
         total_files.value = len(file_paths)
-        original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        pool = Pool(self.args.parallelism, initializer=self.set_vars, initargs=(files_processed, total_files))
-        signal.signal(signal.SIGINT, original_sigint)
-        try:
-            res = pool.map_async(self.handle_binary, file_paths)
-            print('Waiting for results')
-            res.get(60*60*24)
-        except KeyboardInterrupt:
-            print('GOT KEYBOARD INTERRUPT')
-            pool.terminate()
-        else:
-            print("Normal termination")
-            pool.close()
-        pool.join()
 
+        pathQueue = Queue()
+        resultQueue = Queue()
+        procs = []
+        for _ in range(self.args.parallelism):
+            proc = Process(target=self.process_queue, args=(pathQueue, resultQueue, files_processed, total_files))
+            procs.append(proc)
+            proc.start()
+
+        for path in file_paths:
+            pathQueue.put(path)
+
+        for _ in range(self.args.parallelism):
+            pathQueue.put(None)
+
+        for proc in procs:
+            proc.join()
 
     def handle_folder(self):
         file_paths = []

@@ -61,12 +61,15 @@ data flows, query the database, and perform match set analysis on the results.
 
 Note: These examples are done with PowerShell.  Hence, \ is not an escape character.
 
-> py .\flowslicer.py sample_binaries\linux_bin\ --db linux_bin_cbor --parallelism 20
+> py .\flowslicer.py sample_binaries\linux_bin\ --db linux_bin_cbor --parallelism 14
 
 This command will process all executables in the sample_binaries\linux_bin folder,  create a folder called
 `linux_bin_cbor`, and generate one .cbor for each binary in that folder.  This process can take a long time.
---parallelism 20 will spin up 20 instances to load the cores.  An Intel 12700H processor (14C 20T) will be able to
+--parallelism 10 will spin up 10 instances to load the cores.  An Intel 12700H processor (14C 20T) will be able to
 process 900 linux /usr/bin files in about 90 minutes.
+
+Note that each instance will run a separate Binary Ninja instance, which are each multi-threaded.  However, some
+of the processing will be single-threaded in the python script.
 
 > py .\db.py --db linux_bin.db linux_bin_cbor
 

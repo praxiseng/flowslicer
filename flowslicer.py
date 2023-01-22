@@ -1048,7 +1048,8 @@ def analyze_hlil_instruction(bv: binaryninja.BinaryView,
 def process_function(args,
                      bv: binaryninja.BinaryView,
                      fx: binaryninja.Function,
-                     output: Generator[None, dict, None]):
+                     output: Generator[None, dict, None],
+                     hlil: binaryninja.highlevelil.HighLevelILInstruction = None):
 
     if not fx:
         print(f'Passed NULL function to process!')
@@ -1058,7 +1059,7 @@ def process_function(args,
         return
 
     parser = ILParser()
-    dfx: DataFlowILFunction = parser.parse(list(fx.hlil.ssa_form))
+    dfx: DataFlowILFunction = parser.parse(list((hlil or fx.hlil).ssa_form))
     #print_dfil(dfx)
 
     partition = dfx.partition_basic_slices()
@@ -1079,12 +1080,12 @@ def process_function(args,
             try:
                 xslice.fold_const()
             except LimitExceededException:
-                pass
+                print(f'Limit exceeded in {fx} during fold_const')
 
             try:
                 xslice.fold_single_use()
             except LimitExceededException:
-                pass
+                print(f'Limit exceeded in {fx} during fold_single_use')
 
             canonical = Canonicalizer(xslice, dfx.cfg)
             canonical_text = canonical.get_canonical_text()
@@ -1156,10 +1157,11 @@ def _handle_binary(args,
         if args.function:
             handle_functions_by_name(args, bv, args.function, output)
         else:
-            for fx in bv.functions:
+            for fx_il in bv.hlil_functions(100):
                 if verbosity >= 2:
                     print(f'Analyzing {fx}')
-                process_function(args, bv, fx, output)
+                fx = fx_il.source_function
+                process_function(args, bv, fx, output, hlil=fx_il)
 
 class Logger:
     def __init__(self, output_streams, current_file_path):
@@ -1171,7 +1173,7 @@ class Logger:
             return
         file_name = os.path.basename(self.current_file_path)
         for line in buf.rstrip().splitlines():
-            txt = f'{file_name:20}{line}'
+            txt = f'{file_name:24} {line}'
             for stream in self.output_streams:
                 print(txt, file=stream)
 

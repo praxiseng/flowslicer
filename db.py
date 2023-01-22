@@ -2,6 +2,7 @@ import hashlib
 import heapq
 import itertools
 import os
+from collections import defaultdict
 
 import cbor2
 import sys
@@ -133,13 +134,64 @@ class Main:
         self.args = parser.parse_args()
 
         if self.args.search:
-            self.search()
+            search_results = self.search()
+            if len(self.args.files) > 1:
+                self.generateMatchSetCorrelationMatrix(search_results)
+
         else:
             self.ingest_files()
 
+    def base_file_name(self, path):
+        return os.path.basename(path).replace('.cbor', '')
+
+
+    def generateMatchSetCorrelationMatrix(self, match_results):
+        ''' This may look like a confusion matrix, but it isn't.  It counts the number of match sets that only
+            contain files in the search list.
+        '''
+
+        search_filenames = self.getSearchFilenames()
+
+        confusion_matrix = {}
+
+        for filename, match_results in match_results.items():
+            row = defaultdict(int)
+            for result in match_results:
+                fileNames = result['otherFiles']['fileNames']
+                good_match = all(fname in search_filenames for fname in fileNames)
+
+                if good_match:
+                    for fname in fileNames:
+                        row[fname] += 1
+
+            confusion_matrix[filename] = row
+
+        matrix_order = confusion_matrix.keys()
+
+        for row_index in matrix_order:
+            row = confusion_matrix[row_index]
+            row_txt = ' '.join(f'{row.get(col_index,""):4}' for col_index in matrix_order)
+            print(f'{row_index:16} {row_txt}')
+
+        print(f',{",".join(matrix_order)}')
+        for row_index in matrix_order:
+            row = confusion_matrix[row_index]
+            row_txt = ','.join(str(row.get(col_index, 0)) for col_index in matrix_order)
+            print(f'{row_index},{row_txt}')
+
+    def getSearchFilenames(self):
+        return [self.base_file_name(path) for path in self.args.files]
+
 
     def search(self):
+        search_filenames = self.getSearchFilenames()
+        print(f'filenames: {search_filenames}')
+
+        all_results = {}
+
         for path in self.args.files:
+            filename = self.base_file_name(path)
+
             match_results = self.search_file(path)
             # match_results = sorted(match_results, key=lambda result:result['thisFile']['funcNames'])
 
@@ -151,12 +203,13 @@ class Main:
                                    )
 
             filter_match_results = [result for result in match_results if len(result['canonicalText'].split('\n')) > 5]
-            self.display_search_results(filter_match_results)
+            # self.display_search_results(filter_match_results)
 
-            self.summarize_match_sets(match_results)
+            print()
+            self.summarize_match_sets(match_results, 10)
 
-
-
+            all_results[filename] = match_results
+        return all_results
 
     def read_db_header(self):
         with open(self.args.db, 'rb') as fd:
@@ -171,7 +224,7 @@ class Main:
             except cbor2.CBORDecodeEOF:
                 pass
 
-    def summarize_match_sets(self, match_results):
+    def summarize_match_sets(self, match_results, last_n=50):
         groups = []
         for matchSetHash, group in itertools.groupby(match_results, key=lambda x:x['otherFiles']['matchSetHash']):
             group = list(group)
@@ -181,7 +234,7 @@ class Main:
             groups.append((matchSetHash, fids, fileNames, group))
 
         groups = sorted(groups, key=lambda x: (len(x[3]), x[2]))
-        for matchSetHash, fids, fileNames, matchResults in groups[-50:]:
+        for matchSetHash, fids, fileNames, matchResults in groups[-last_n:]:
             names = (' '.join(fileNames))[:150]
             print(f'{len(matchResults):6} {len(fids):3} {names:100}')
 

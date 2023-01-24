@@ -18,14 +18,14 @@ To install the Binary Ninja API, run `scripts/install_api.py` with your specific
 
 Also install the `cbor2` library using pip:
 
-```Shell
+```commandline
 python -m pip install cbor2
 ```
 
 
 ## Command line reference
 
-```Shell
+```commandline
 usage: flowslicer.py [-h] [--db [PATH]] [--slices [PATH]] [--function NAME [NAME ...]] [--force-update] [--parallelism N] [-v] {search,ingest,slice} [files ...]
 
 Data flow slicing and match set analysis tool.
@@ -57,7 +57,7 @@ for search files using the `search` command.
 
 Example usage:
 
-```Shell
+```commandline
 ./flowslicer.py slice sample_binaries/linux_bin/ --slices slices/linux_bin --parallelism 10
 ``` 
 
@@ -91,7 +91,7 @@ The `ingest` command takes a list of files with the `.slices` extension and comb
 >  ./flowslicer.py ingest --db linux_bin.slicedb slices/linux_bin
 
 Example output:
-```Shell
+```commandline
 ...
    691 slices,    428 unique slices\linux_bin\zdump.slices
   6929 slices,   2842 unique slices\linux_bin\zenity.slices
@@ -104,13 +104,13 @@ Wrote 2003995 items from 900 files to .\linux_bin.slicedb
 ## The `search` command
 
 The `search` command searches for data flow slices
-```Shell
+```commandline
 ./flowslicer.py search --db linux_bin.slicedb slices/linux_bin/git.slices
 ```
 
 This produces match set output:
 
-```Shell
+```commandline
 ...
     49   3 emacs-gtk git-shell git
     49   2 git snap

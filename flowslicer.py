@@ -1213,27 +1213,41 @@ class Main:
 
 
         general = parser.add_argument_group('General options')
-        parser.add_argument('command', choices={"slice", "ingest", "search"}, help="Command to run")
-        parser.add_argument('files', nargs='+',
-                            help="List of binaries to slice, slice files to ingest, or slice files to search. " +
-                            "Folders will be recursively enumerated.")
+        parser.add_argument('command',
+                            choices={"slice", "ingest", "search"},
+                            metavar='COMMAND',
+                            help='Available commands are slice, ingest, and search')
+        parser.add_argument('files',
+                            nargs='+',
+                            metavar='FILES',
+                            help="List of binaries to slice, slice files to ingest into a slicedb, or slice file(s) "
+                                 "to use for a search against a slicedb. Folders will be recursively enumerated.")
 
-        general.add_argument('--db', default='slices.slicedb', metavar='PATH', nargs='?',
+        general.add_argument('-d', '--db', default='slices.slicedb', metavar='SLICEDB', nargs='?',
                             help='Database file for ingest and search.  Defaults to "slices.slicedb".')
 
         slicing = parser.add_argument_group('Slice command options')
-        slicing.add_argument('--slices',
-                             default='data_flow_slices', metavar='PATH', nargs='?',
+        slicing.add_argument('-s', '--slices',
+                             default='data_flow_slices', metavar='SLICES_DIR', nargs='?',
                              help='Folder to place slice files and logs.  Defaults to "data_flow_slices".')
-        slicing.add_argument('--function', metavar='NAME', nargs='+')
-        slicing.add_argument('--force-update', action='store_true', help=''
-                             #f'Replace output {SLICE_EXTENSION} files if they already exist.'
+
+        slicing.add_argument('-x', '--function',
+                             metavar='NAME', action='append',
+                             help='Limit slicing to a function or functions.')
+        slicing.add_argument('-f', '--force-update', action='store_true', help=
+                             f'Replace output {SLICE_EXTENSION} files if they already exist.'
                              )
-        slicing.add_argument('--parallelism', metavar='N', type=int, default=1, help=
+        slicing.add_argument('-p', '--parallelism', metavar='N', type=int, default=1, help=
                              'Run N instances in parallel.  While Binary Ninja has some multithreading of ' +
                              'its own, flowslicer.py has some serial portions that can be sped up by parallelism. ' +
                              'While this will vary per system, we suggest around 50%% and 75%% of the number of ' +
                              'physical cores.')
+
+        search = parser.add_argument_group('Search command options')
+        search.add_argument('--detail', metavar='OUT_DIR', nargs=1,
+                            default='match_set_detail',
+                            help='Specify a folder to output detailed information on each slice in each match set.'
+                            )
 
         parser.add_argument('-v', '--verbose', action='count', default=0)
         global verbosity
@@ -1260,16 +1274,13 @@ class Main:
 
             for path in self.args.files:
                 if os.path.isdir(path):
-                    self.handle_folder(path)
+                    self.slice_binaries_in_folder(path)
                 else:
-                    self.handle_binary(path)
+                    self.slice_binary(path)
 
         if self.args.command in ["ingest", "search"]:
-            subcommand = ['--db', self.args.db]
-            if self.args.command == "search":
-                subcommand.append('-s')
-            subcommand.extend(self.args.files)
-            db.Main(input_args=subcommand)
+            self.args.search = self.args.command == "search"
+            db.DBMain(self.args)
 
 
     def set_vars(self, processed, total):
@@ -1309,21 +1320,21 @@ class Main:
 
         os.replace(out_path, final_path)
 
-    def handle_binary(self, binary_path: str):
+    def slice_binary(self, binary_path: str):
         try:
             self._slice_binary(binary_path)
         except KeyboardInterrupt:
             sys.exit(0)
 
-    def process_binaries_serially(self, file_paths):
+    def slice_binaries_serially(self, file_paths):
         print("PROCESSING SERIALLY")
         files_processed.value = 0
         total_files.value = len(file_paths)
 
         for idx, path in enumerate(file_paths):
-            self.handle_binary(path)
+            self.slice_binary(path)
 
-    def process_queue(self, paths: Queue, results: Queue, files_processed, total_files):
+    def slice_subprocess_queue_handler(self, paths: Queue, results: Queue, files_processed, total_files):
         original_stdout = sys.stdout
         original_stderr = sys.stderr
         self.set_vars(files_processed, total_files)
@@ -1338,9 +1349,9 @@ class Main:
                 sys.stderr = Logger([original_stderr], path)
                 binaryninja.log.log_to_file(binaryninja.log.LogLevel.WarningLog, log_path, False)
                 # results.put(dict(processing=path))
-                self.handle_binary(path)
+                self.slice_binary(path)
 
-    def process_binaries_in_parallel(self, file_paths):
+    def slice_binaries_in_parallel(self, file_paths):
         files_processed.value = 0
         total_files.value = len(file_paths)
 
@@ -1350,7 +1361,7 @@ class Main:
 
         try:
             for _ in range(self.args.parallelism):
-                proc = Process(target=self.process_queue, args=(pathQueue, resultQueue, files_processed, total_files))
+                proc = Process(target=self.slice_subprocess_queue_handler, args=(pathQueue, resultQueue, files_processed, total_files))
                 procs.append(proc)
                 proc.start()
 
@@ -1366,7 +1377,7 @@ class Main:
             for proc in procs:
                 proc.terminate()
 
-    def handle_folder(self, path):
+    def slice_binaries_in_folder(self, path):
         file_paths = []
         for root, dirs, files in os.walk(path):
             for file in files:
@@ -1374,9 +1385,9 @@ class Main:
                 file_paths.append(file_path)
 
         if self.args.parallelism <= 1:
-            self.process_binaries_serially(file_paths)
+            self.slice_binaries_serially(file_paths)
         else:
-            self.process_binaries_in_parallel(file_paths)
+            self.slice_binaries_in_parallel(file_paths)
 
 
 if __name__ == "__main__":

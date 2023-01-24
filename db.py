@@ -124,25 +124,18 @@ def merge(iterators):
         except StopIteration:
             pass
 
-class Main:
-    def __init__(self, input_args=None):
+class DBMain:
+    def __init__(self, args):
         self.all_counts = []
         self.headers = []
         self.db_header = {}
 
-        import argparse
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument('files', nargs='*')
-        parser.add_argument('--db', default='slicedb.db', metavar='PATH', nargs='?')
-        parser.add_argument('-s', '--search', action='store_true')
-        self.args = parser.parse_args(args=input_args)
+        self.args = args
 
         if self.args.search:
             search_results = self.search()
             if len(self.args.files) > 1:
                 self.generateMatchSetCorrelationMatrix(search_results)
-
         else:
             self.ingest_files()
 
@@ -187,7 +180,6 @@ class Main:
     def getSearchFilenames(self):
         return [self.base_file_name(path) for path in self.args.files]
 
-
     def search(self):
         search_filenames = self.getSearchFilenames()
 
@@ -208,11 +200,16 @@ class Main:
                                     )
                                    )
 
-            filter_match_results = [result for result in match_results if len(result['canonicalText'].split('\n')) > 5]
+            #filter_match_results = [result for result in match_results if len(result['canonicalText'].split('\n')) > 5]
             # self.display_search_results(filter_match_results)
 
+            match_set_groups = self.group_match_sets(match_results)
+
             print()
-            self.summarize_match_sets(match_results, last_n)
+            self.summarize_match_sets(match_set_groups, last_n)
+
+            if self.args.detail:
+                self.output_match_set_groups(self.args.detail, match_set_groups)
 
             all_results[filename] = match_results
         return all_results
@@ -230,7 +227,7 @@ class Main:
             except cbor2.CBORDecodeEOF:
                 pass
 
-    def summarize_match_sets(self, match_results, last_n=50):
+    def group_match_sets(self, match_results) -> list:
         groups = []
         for matchSetHash, group in itertools.groupby(match_results, key=lambda x:x['otherFiles']['matchSetHash']):
             group = list(group)
@@ -238,11 +235,77 @@ class Main:
             fids = otherFiles['fileIDs']
             fileNames = otherFiles['fileNames']
             groups.append((matchSetHash, fids, fileNames, group))
+        return groups
 
-        groups = sorted(groups, key=lambda x: (len(x[3]), x[2]))
+    def output_match_set_groups(self, output_dir, match_set_groups):
+        os.makedirs(output_dir, exist_ok=True)
+
+        def formatFuncAddress(funcAddress):
+            addrs = [f'{addr:x}' for addr in sorted(funcAddress['addressSet'])]
+            return f'{funcAddress["funcName"]:20} {",".join(addrs)}'
+
+        for matchSetHash, fids, fileNames, matchResults in match_set_groups:
+
+            names = (' '.join(fileNames))[:50]
+            out_path = os.path.join(output_dir, f'{btoh(matchSetHash)} {names}.txt')
+
+            with open(out_path, 'w') as fd:
+                print(f'Match set {btoh(matchSetHash)} has {len(fileNames)} files', file=fd)
+                for name in fileNames:
+                    print(f'  {name}', file=fd)
+
+                print(f'\nSlices with the match set:', file=fd)
+
+                for result in matchResults:
+                    slice_hash = result['hash']
+                    dfilText = result['canonicalText']
+
+                    thisFile = result['thisFile']
+                    funcAddresses = thisFile['funcAddresses']
+
+                    otherFiles = result['otherFiles']
+                    fileCount = otherFiles['fileCount']
+                    funcCount = otherFiles['funcCount']
+                    instanceCount = otherFiles['instanceCount']
+
+                    count_txt = f'{fileCount} {funcCount} {instanceCount}'
+
+                    single_func = formatFuncAddress(funcAddresses[0]) if len(funcAddresses) == 1 else ''
+
+                    print(f'Slice {btoh(slice_hash)} {count_txt:10} {single_func}', file=fd)
+
+                    if len(funcAddresses) > 1:
+                        for funcAddress in funcAddresses:
+                            print(f'  {formatFuncAddress(funcAddress)}', file=fd)
+
+
+                for result in matchResults:
+                    slice_hash = result['hash']
+                    dfilText = result['canonicalText']
+
+                    otherFiles = result['otherFiles']
+                    fileCount = otherFiles['fileCount']
+                    funcCount = otherFiles['funcCount']
+                    instanceCount = otherFiles['instanceCount']
+
+                    count_txt = f'{fileCount} {funcCount} {instanceCount}'
+                    single_func = formatFuncAddress(funcAddresses[0]) if len(funcAddresses) == 1 else ''
+
+                    # Indent DFIL text block
+                    dfilText = '\n'.join(f'    {line}' for line in dfilText.split('\n'))
+
+                    print(f'\nSlice {btoh(slice_hash)} {count_txt} {single_func}', file=fd)
+
+                    print(dfilText, file=fd)
+
+
+    def summarize_match_sets(self, match_set_groups, last_n=50):
+        # Sort by number of slices, then by the list of file names.
+
+        groups = sorted(match_set_groups, key=lambda x: (len(x[3]), x[2]))
         for matchSetHash, fids, fileNames, matchResults in groups[-last_n:]:
-            names = (' '.join(fileNames))[:150]
-            print(f'{len(matchResults):6} {len(fids):3} {names:100}')
+            names = (' '.join(fileNames))[:150].rstrip()
+            print(f'{len(matchResults):6} {btoh(matchSetHash)} {len(fids):3} {names}')
 
             '''
             for result in matchResults[:5]:
@@ -289,7 +352,7 @@ class Main:
                   f'{len(dfil_exprs):3} {dfil_summary[:100]}')
             #print(ctext)
 
-    def search_file(self, path):
+    def search_file(self, path: str):
         header, hash_data = load_cbor_file(path, include_detail=True)
         self.read_db_header()
         db_stream = self.read_db()
@@ -345,7 +408,7 @@ class Main:
             match_results.append(result)
         return match_results
 
-    def ingest_files(self):
+    def ingest_files(self) -> None:
         file_count = 0
         for path in self.args.files:
             if os.path.isdir(path):
@@ -361,7 +424,7 @@ class Main:
         items_written = self.write_to_file(self.args.db, self.db_header, grouped_db)
         print(f'Wrote {items_written} items from {file_count} files to {self.args.db}')
 
-    def process_file(self, path):
+    def process_file(self, path: str) -> None:
         header, entries = load_cbor_file(path)
         counts = convert_to_counts(entries)
 
@@ -375,7 +438,7 @@ class Main:
 
         print(f'{len(entries):6} slices, {len(counts):6} unique {path}')
 
-    def process_folder(self, path):
+    def process_folder(self, path: str) -> int:
         file_count = 0
         for root, dirs, files in os.walk(path):
             for file in files:
@@ -431,6 +494,3 @@ class Main:
                 n_written += 1
         return n_written
 
-
-if __name__ == "__main__":
-    Main()

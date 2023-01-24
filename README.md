@@ -112,25 +112,51 @@ This produces match set output:
 
 ```commandline
 ...
-    49   3 emacs-gtk git-shell git
-    49   2 git snap
-    55   5 cmake cpack ctest git-shell git
-    87   4 git-shell git qemu-system-i386 qemu-system-x86_64
-   130   4 git-shell git vim.basic vim.tiny
-   133   2 gdb git
-   181   3 gdb git-shell git
-   229   3 bat git-shell git
- 18357   2 git-shell git
- 38031   1 git
+    49 47ca9d8276ce   3 emacs-gtk git-shell git
+    49 3931ec1054bc   2 git snap
+    55 bcab5267e51a   5 cmake cpack ctest git-shell git
+    87 9f7c6da1158a   4 git-shell git qemu-system-i386 qemu-system-x86_64
+   130 e33e41aaaf48   4 git-shell git vim.basic vim.tiny
+   133 91a13c5c60a9   2 gdb git
+   181 e3d779ca2571   3 gdb git-shell git
+   229 b398592e85f6   3 bat git-shell git
+ 18357 3918f20021dc   2 git-shell git
+ 38031 e165421110ba   1 git
 ```
 
-The first column is the number of slices in the match set.  The second is the number of files.  The last is the list
+The first column is the number of slices in the match set.  The second column is a hash of the set of files in this 
+match set.  This match set hash can be used to reference the slices in the folder output by the `--detail OUT_DIR` 
+option (which defaults to `match_set_detail/`).  The third column is the number of files, and the last is the list
 of files by name.  Using this output, we can for example conclude there are `18357` slices that match `git-shell` and 
 `git`, but no other files in the input database.
 
+### Match Set Detail Files
+
+When running a search command with `--detail OUT_DIR` (which defaults to `match_set_detail/`), a text file is generated
+for each match set listing detailed information on all the slices that have that match set.  For example:
+
+```commandline
+Match set 3918f20021dc has 2 files
+  git-shell
+  git
+
+Slices with the match set:
+Slice 0001810b8c75 2 2 2      sub_1879c0           1879c9,1879fc
+Slice 00022eea4ee9 2 2 2      sub_14f8c0           14f8de,14f91f,14fa6d,14fa8a,14fa9e
+Slice 0002338e0e1a 2 2 2      sub_1b20a0           1b20d2,1b20d7,1b20de,1b20e9
+Slice 0003bb5e377e 2 2 2      sub_1c0840           1c09d4,1c0a87,1c0a9e,1c0aac,1c0ac0,1c0e83,1c0f59,1c0fa7
+...
+```
+
+This contains the following details:
+* Slice hash
+* Counts of the slice in other files (# files, # functions, # instances)
+* From the search file, the function names and instruction addresses.
+
+Further down the detail file, each slice is repeated but with the canonicalized text of the slice.
+
 ## Next Features
 
-* List slice information for each match set.
 * Support not-of-interest databases that subtract out match sets that include known/common libraries.
 * Run commands (slice, ingest, search) from within Binary Ninja.
 

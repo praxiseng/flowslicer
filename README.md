@@ -8,80 +8,129 @@ See the related project [REveal](https://github.com/praxiseng/reveal)
 
 ## Prerequisites
 
+Flowslicer requires Python 3.10 or newer.
+
 A Binary Ninja license with "GUI-less processing" is needed to run the command line.  There are plans to make it
-available purely through the plug-in interface to allow non-commercial users to use this tool, but that is not yet
-implemented.
+available purely through the plug-in interface to allow Binary Ninja users with personal licences to use this tool,
+but that is not yet implemented.
 
+To install the Binary Ninja API, run `scripts/install_api.py` with your specific python interpreter.
 
-## Flowslicer.py
+Also install the `cbor2` library using pip:
 
+```commandline
+python -m pip install cbor2
 ```
-usage: flowslicer.py [-h] [--function NAME [NAME ...]] [--output [PATH]] [--force-update] [--parallelism N] [-v] binary
+
+
+## Command line reference
+
+```commandline
+usage: flowslicer.py [-h] [--db [PATH]] [--slices [PATH]] [--function NAME [NAME ...]] [--force-update] [--parallelism N] [-v] {search,ingest,slice} [files ...]
+
+Data flow slicing and match set analysis tool.
 
 positional arguments:
-  binary
+  {search,ingest,slice}
+                        Command to run
+  files                 List of binaries to slice, slice files to ingest, or slice files to search. Folders will be recursively enumerated.
 
 options:
   -h, --help            show this help message and exit
+  --db [PATH]           Database file for ingest and search. Defaults to "slices.slicedb".
+  -v, --verbose
+
+Slice command options:
+  --slices [PATH]       Folder to place slice files and logs. Defaults to "data_flow_slices".
   --function NAME [NAME ...]
-  --output [PATH]
   --force-update
   --parallelism N
-  -v, --verbose
 ```
 
-Flowslicer will produce a .cbor file for each parsed binary.  These .cbor files will be placed in the folder specified
-by --output.
+## The `slice` command
 
-These .cbor files can then be processed and combined into a single database file using the db.py script.
+The slice command will take a list of binaries (or folders to enumerate binaries) and produce a `.slices` file for each 
+binary.  These `.slices` files will be placed in a folder specified by `--slices` (defaults to `data_flow_slices`).
 
+These `.slices` files can then be processed and combined into a single database file using `ingest` command or used
+for search files using the `search` command.
 
-## db.py
+Example usage:
 
+```commandline
+./flowslicer.py slice sample_binaries/linux_bin/ --slices slices/linux_bin --parallelism 10
+``` 
 
+This command will process all executables in the sample_binaries\linux_bin folder, create a folder called
+`slices/linux_bin/`, and generate one `.slices` file for each binary in that folder.  900 linux binaries takes up to 90 
+minutes.
+
+### Notes on Parallelism
+
+The data flow slicing process can take a long time, depending on the binaries. For example, on an Intel 12700H 
+processor (14C 20T) `--parallelism 10` will spin up 10 instances to load the cores to nearly 100%, and can process 
+900 linux files from `/usr/bin` in about 90 minutes.
+
+Note that while each parallel instance will create a separate Binary Ninja (headless) instance, and each Binary Ninja
+instance is multi-threaded.  However, some of the processing will be single-threaded in the python script, so a 
+parallelism limit somewhere in the 50-75% of the physical cores is recommended to saturate processing resources.
+
+The memory usage per instance can vary greatly per binary.  With basic Linux and Windows system binaries and Binary
+Ninja 3.3, each binary probably uses an average of 1GB, with few binaries exceeding 2GB of memory.  So a 
+parallelism-to-memory ratio of 1:2GB should be sufficient for processing the majority of binaries.
+
+However, some binaries can consume much more memory.  For example, according to the Binary Ninja blog Linux Chrome 
+with full symbols can consume ~34GB of memory.  Since Flowslicer will output to a `.temp` file and rename to `.slices`
+only after processing completes, binaries that failed with out-of-memory can be retried with more memory (e.g. lower
+parallelism to increase memory ratio).
+
+## The `ingest` command
+
+The `ingest` command takes a list of files with the `.slices` extension and combines them into a single `.slicedb` file. 
+
+>  ./flowslicer.py ingest --db linux_bin.slicedb slices/linux_bin
+
+Example output:
+```commandline
+...
+   691 slices,    428 unique slices\linux_bin\zdump.slices
+  6929 slices,   2842 unique slices\linux_bin\zenity.slices
+  9246 slices,   4309 unique slices\linux_bin\zipinfo.slices
+  2095 slices,   1062 unique slices\linux_bin\[.slices
+Merged counts 3309730
+Wrote 2003995 items from 900 files to .\linux_bin.slicedb
 ```
-usage: db.py [-h] [--db [PATH]] [-s] [files ...]
 
-positional arguments:
-  files
+## The `search` command
 
-options:
-  -h, --help    show this help message and exit
-  --db [PATH]
-  -s, --search
+The `search` command searches for data flow slices
+```commandline
+./flowslicer.py search --db linux_bin.slicedb slices/linux_bin/git.slices
 ```
 
+This produces match set output:
 
-The default mode for db.py processes .cbor files and combines them into an output file specified by --db.  Then db.py
-can be used in search mode with -s.
+```commandline
+...
+    49   3 emacs-gtk git-shell git
+    49   2 git snap
+    55   5 cmake cpack ctest git-shell git
+    87   4 git-shell git qemu-system-i386 qemu-system-x86_64
+   130   4 git-shell git vim.basic vim.tiny
+   133   2 gdb git
+   181   3 gdb git-shell git
+   229   3 bat git-shell git
+ 18357   2 git-shell git
+ 38031   1 git
+```
 
-In search mode, specify an input database with --db, and a .cbor file as a query binary.  This will slice data flows, 
-query the database, and perform match set analysis on the results.
+The first column is the number of slices in the match set.  The second is the number of files.  The last is the list
+of files by name.  Using this output, we can for example conclude there are `18357` slices that match `git-shell` and 
+`git`, but no other files in the input database.
 
+## Next Features
 
-## Example Usage
+* List slice information for each match set.
+* Support not-of-interest databases that subtract out match sets that include known/common libraries.
+* Run commands (slice, ingest, search) from within Binary Ninja.
 
-> py flowslicer.py sample_binaries/linux_bin/ --db linux_bin_cbor --parallelism 14
-
-This command will process all executables in the sample_binaries\linux_bin folder,  create a folder called
-`linux_bin_cbor`, and generate one .cbor for each binary in that folder.  This process can take a long time.
---parallelism 10 will spin up 10 instances to load the cores.  An Intel 12700H processor (14C 20T) will be able to
-process 900 linux /usr/bin files in about 90 minutes.
-
-Note that each instance will run a separate Binary Ninja instance, which are each multi-threaded.  However, some
-of the processing will be single-threaded in the python script.
-
-> py db.py --db linux_bin.db linux_bin_cbor
-
-This command will process the win_sys_db database of CBOR files and summarize into a win_sys.db file.  It will hash
-slice text, then store compact summaries that include the following details:
-
- * Slice hash
- * Count of files, functions, and instances of the slice
- * The list of files with that slice
-
- > py db.py --db linux_bin.db --search linux_bin_cbor/ls.cbor
-
- This command queries the processed database linux_bin.db with the linux_bin_cbor\ls.cbor CBOR file.  To create a cbor
- file on a new executable, run the flowslicer.py script on the new file.  db.py in search mode will summarize
- the match set output.

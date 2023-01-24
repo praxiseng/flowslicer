@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import hashlib
 import heapq
 import itertools
@@ -7,6 +9,9 @@ from collections import defaultdict
 import cbor2
 import sys
 import json
+
+
+SLICE_EXTENSION = '.slices'
 
 
 def md5(b):
@@ -120,7 +125,7 @@ def merge(iterators):
             pass
 
 class Main:
-    def __init__(self):
+    def __init__(self, input_args=None):
         self.all_counts = []
         self.headers = []
         self.db_header = {}
@@ -131,7 +136,7 @@ class Main:
         parser.add_argument('files', nargs='*')
         parser.add_argument('--db', default='slicedb.db', metavar='PATH', nargs='?')
         parser.add_argument('-s', '--search', action='store_true')
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(args=input_args)
 
         if self.args.search:
             search_results = self.search()
@@ -142,7 +147,7 @@ class Main:
             self.ingest_files()
 
     def base_file_name(self, path):
-        return os.path.basename(path).replace('.cbor', '')
+        return os.path.basename(path).replace(SLICE_EXTENSION, '')
 
 
     def generateMatchSetCorrelationMatrix(self, match_results):
@@ -185,9 +190,10 @@ class Main:
 
     def search(self):
         search_filenames = self.getSearchFilenames()
-        print(f'filenames: {search_filenames}')
 
         all_results = {}
+
+        last_n = 100 if len(self.args.files) == 1 else 10
 
         for path in self.args.files:
             filename = self.base_file_name(path)
@@ -206,7 +212,7 @@ class Main:
             # self.display_search_results(filter_match_results)
 
             print()
-            self.summarize_match_sets(match_results, 10)
+            self.summarize_match_sets(match_results, last_n)
 
             all_results[filename] = match_results
         return all_results
@@ -340,18 +346,20 @@ class Main:
         return match_results
 
     def ingest_files(self):
+        file_count = 0
         for path in self.args.files:
             if os.path.isdir(path):
-                self.process_folder(path)
+                file_count += self.process_folder(path)
             else:
                 self.process_file(path)
+                file_count += 1
 
         merged_counts = list(merge(self.all_counts))
         print(f'Merged counts {len(merged_counts)}')
         grouped_db = self.thunk_groups(merged_counts)
 
         items_written = self.write_to_file(self.args.db, self.db_header, grouped_db)
-        print(f'Wrote {items_written} items to {self.args.db}')
+        print(f'Wrote {items_written} items from {file_count} files to {self.args.db}')
 
     def process_file(self, path):
         header, entries = load_cbor_file(path)
@@ -368,12 +376,15 @@ class Main:
         print(f'{len(entries):6} slices, {len(counts):6} unique {path}')
 
     def process_folder(self, path):
+        file_count = 0
         for root, dirs, files in os.walk(path):
             for file in files:
-                if not file.endswith('.cbor'):
+                if not file.endswith(SLICE_EXTENSION):
                     continue
                 file_path = os.path.join(root, file)
                 self.process_file(file_path)
+                file_count += 1
+        return file_count
 
     def _thunk_group_gen(self, merged_counts, id_thunks):
         for slice_hash, group in itertools.groupby(merged_counts, lambda x: x[0][0]):

@@ -4,6 +4,7 @@ from flowslicer import flowslicer, dfil
 import binaryninja
 
 
+
 def flowslicer_closure(*pargs, **kwargs):
     def reload_call_flowslicer(bv, fx):
         reload(flowslicer)

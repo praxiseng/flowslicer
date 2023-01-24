@@ -4,7 +4,7 @@
 Flowslicer extracts data flow slices from binaries.  It can then ingest them into a database, then compare them with
 match set analysis.
 
-See the related project [REveal](github.com/praxiseng/reveal)
+See the related project [REveal](https://github.com/praxiseng/reveal)
 
 ## Prerequisites
 

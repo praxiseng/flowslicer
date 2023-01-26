@@ -174,8 +174,7 @@ flowslicer.slice(r'S:\binaries\linux_bin', parallelism=10)
 The slice command will walk the list of files/folders passed to the first parameter and slice them.  This will produce
 one `.slices` file in `flowslicer.slicesDir`.  This will add/accumulate files each time it is run.
 
-For `parallelism` greater than 1, the script must be running in headless mode and not inside Binary Ninja's Python
-console.
+Flowslicer now supports parallelism greater than 1 when using Binary Ninja's Python console.
 
 ## Ingest
 

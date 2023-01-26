@@ -2,10 +2,12 @@
 
 import json
 import os.path
+import queue
 import sys
 import typing
 
 from collections import defaultdict
+from threading import Thread
 from typing import List, Generator
 
 from multiprocessing import Pool, Value, Process, Queue
@@ -1337,7 +1339,7 @@ class Main:
         temp_path = self.get_slice_output_path(binary_path, '.temp')
         final_path = self.get_slice_output_path(binary_path, SLICE_EXTENSION)
 
-        if verbosity >= 1:
+        if verbosity >= 2:
             print(f'File {files_processed.value + 1} of {total_files.value}: {binary_path}')
 
         files_processed.value += 1
@@ -1376,7 +1378,7 @@ class Main:
         total_files.value = len(file_paths)
 
         for idx, path in enumerate(file_paths):
-            print(f'Slicing {idx+1} of {len(file_paths)}: {path}')
+            #print(f'Slicing {idx+1} of {len(file_paths)}: {path}')
             self.slice_binary(path)
 
     def slice_subprocess_queue_handler(self, paths: Queue, results: Queue, files_processed, total_files):
@@ -1385,42 +1387,85 @@ class Main:
         self.set_vars(files_processed, total_files)
         binaryninja.disable_default_log()
         while True:
+            if self.exiting:
+                break
+
             path = paths.get()
             if path is None:
                 break
             log_path = self.get_slice_output_path(path, '.log')
             with open(log_path, 'w') as log_fd:
-                sys.stdout = Logger([original_stdout], path)
-                sys.stderr = Logger([original_stderr], path)
+                #sys.stdout = Logger([original_stdout], path)
+                #sys.stderr = Logger([original_stderr], path)
                 binaryninja.log.log_to_file(binaryninja.log.LogLevel.WarningLog, log_path, False)
+                results.put(f'Slicing {files_processed.value + 1} of {total_files.value}: {path}')
                 # results.put(dict(processing=path))
                 self.slice_binary(path)
+
+    def poll_result_queue(self):
+        while True:
+            try:
+                result = self.resultQueue.get(timeout=1)
+                print(result)
+            except queue.Empty:
+                if self.exiting:
+                    break
+                pass
 
     def slice_binaries_in_parallel(self, file_paths):
         files_processed.value = 0
         total_files.value = len(file_paths)
 
         pathQueue = Queue()
-        resultQueue = Queue()
+        self.exiting = False
+        self.resultQueue = Queue()
         procs = []
 
+        # mpType = Process
+        mpType = Thread
+
         try:
+            outThread = Thread(target=self.poll_result_queue)
+            outThread.daemon = True
+            outThread.start()
+
             for _ in range(self.args.parallelism):
-                proc = Process(target=self.slice_subprocess_queue_handler, args=(pathQueue, resultQueue, files_processed, total_files))
+                proc = mpType(target=self.slice_subprocess_queue_handler,
+                              args=(pathQueue, self.resultQueue, files_processed, total_files))
                 procs.append(proc)
                 proc.start()
 
+
             for path in file_paths:
-                pathQueue.put(path)
+                while True:
+                    try:
+                        pathQueue.put(path, timeout=0.5)
+                        break
+                    except queue.Full:
+                        print('Timeout!')
+                        pass
 
             for _ in range(self.args.parallelism):
                 pathQueue.put(None)
 
             for proc in procs:
-                proc.join()
+                while True:
+                    proc.join(timeout=1)
+                    if mpType == Thread:
+                        if not proc.is_alive():
+                            break
+                    else:
+                        if proc.exitcode is not None:
+                            break
         except KeyboardInterrupt:
-            for proc in procs:
-                proc.terminate()
+            self.exiting = True
+            if mpType == Process:
+                for proc in procs:
+                    print('Killing')
+                    proc.kill()
+                print('Done killing')
+            os._exit(1)
+            sys.exit()
 
     def slice_binaries_in_folder(self, path):
         file_paths = []

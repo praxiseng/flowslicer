@@ -1304,7 +1304,6 @@ class Main:
 
         self.dbmain = None
 
-
     def run(self):
         if self.args.command == "slice":
             if self.args.slices:
@@ -1390,17 +1389,21 @@ class Main:
             if self.exiting:
                 break
 
-            path = paths.get()
-            if path is None:
-                break
-            log_path = self.get_slice_output_path(path, '.log')
-            with open(log_path, 'w') as log_fd:
-                #sys.stdout = Logger([original_stdout], path)
-                #sys.stderr = Logger([original_stderr], path)
-                binaryninja.log.log_to_file(binaryninja.log.LogLevel.WarningLog, log_path, False)
-                results.put(f'Slicing {files_processed.value + 1} of {total_files.value}: {path}')
-                # results.put(dict(processing=path))
-                self.slice_binary(path)
+            try:
+                path = paths.get()
+                if path is None:
+                    break
+                log_path = self.get_slice_output_path(path, '.log')
+                with open(log_path, 'w') as log_fd:
+                    #sys.stdout = Logger([original_stdout], path)
+                    #sys.stderr = Logger([original_stderr], path)
+                    binaryninja.log.log_to_file(binaryninja.log.LogLevel.WarningLog, log_path, False)
+                    results.put(f'Slicing {files_processed.value + 1} of {total_files.value}: {path}')
+                    # results.put(dict(processing=path))
+                    self.slice_binary(path)
+            except Exception as e:
+                print('Exception in thread')
+                results.put(str(e))
 
     def poll_result_queue(self):
         while True:
@@ -1421,8 +1424,13 @@ class Main:
         self.resultQueue = Queue()
         procs = []
 
-        # mpType = Process
-        mpType = Thread
+        if binaryninja.core_ui_enabled():
+            # Can't create subprocesses from Binja UI, so use threads instead.  This may bottleneck somewhat on
+            # the python Global Interpreter Lock (GIL), but it is faster than serial processing.
+            mpType = Thread
+        else:
+            # Less GIL bottlenecking with subprocesses
+            mpType = Process
 
         try:
             outThread = Thread(target=self.poll_result_queue)
@@ -1434,7 +1442,6 @@ class Main:
                               args=(pathQueue, self.resultQueue, files_processed, total_files))
                 procs.append(proc)
                 proc.start()
-
 
             for path in file_paths:
                 while True:
@@ -1466,6 +1473,7 @@ class Main:
                 print('Done killing')
             os._exit(1)
             sys.exit()
+        self.exiting = True
 
     def slice_binaries_in_folder(self, path):
         file_paths = []

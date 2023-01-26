@@ -23,7 +23,7 @@ python -m pip install cbor2
 ```
 
 
-## Command line reference
+# Command line reference
 
 ```commandline
 usage: flowslicer.py [-h] [--db [PATH]] [--slices [PATH]] [--function NAME [NAME ...]] [--force-update] [--parallelism N] [-v] {search,ingest,slice} [files ...]
@@ -155,8 +155,54 @@ This contains the following details:
 
 Further down the detail file, each slice is repeated but with the canonicalized text of the slice.
 
+
+# Python Command Reference
+
+Python commands can be used in either a generic Python shell (headless mode) or from within the Binary Ninja Python
+console.  The Binary Ninja plugin interface has 3 configuration paths that set output directories for the `.slices`
+files, the `.slicedb` file, and the detailed slice output `.txt` file.
+
+Note: the current defaults for the 3 paths has only been tested on Windows and uses the `${USERPROFILE}` environment
+variable.  These defaults may need to be manually overridden on other platforms. 
+
+## Slicing
+
+```commandline
+import flowslicer
+flowslicer.slice(r'S:\binaries\linux_bin', parallelism=10)
+```
+The slice command will walk the list of files/folders passed to the first parameter and slice them.  This will produce
+one `.slices` file in `flowslicer.slicesDir`.  This will add/accumulate files each time it is run.
+
+For `parallelism` greater than 1, the script must be running in headless mode and not inside Binary Ninja's Python
+console.
+
+## Ingest
+
+```commandline
+import flowslicer
+flowslicer.ingest()
+```
+
+The ingest command will take all `.slices` files found in the path specified by `flowslicer.slicesDir` and produce a
+single file in the path specified by `flowslicer.sliceDBPath`.
+
+## Search
+
+```commandline
+import flowslicer
+flowslicer.search(r'S:\binaries\linux_bin\ls')
+```
+
+Whether you give a path to a binary, a path to a `.slices` file, or a `BinaryView` object, (e.g. `current_view` when
+running on the console), a `.slices` file will be generated if needed to use for the search.  Then it will query
+the database at `flowslicer.sliceDBPath`, count match sets, and sort by number of slices in that match set.
+
+The search command will also produce match details files at `flowslicer.detailDir`.
+
+
+
 ## Next Features
 
 * Support not-of-interest databases that subtract out match sets that include known/common libraries.
-* Run commands (slice, ingest, search) from within Binary Ninja.
 

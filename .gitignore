@@ -1,1 +1,9 @@
 .idea
+*.db
+old
+slices/
+data_flow_slices/
+match_set_detail/
+__pycache__/
+*.slicedb
+*.txt

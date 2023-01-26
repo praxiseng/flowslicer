@@ -3,6 +3,7 @@
 import json
 import os.path
 import sys
+import typing
 
 from collections import defaultdict
 from typing import List, Generator
@@ -16,8 +17,10 @@ from binaryninja import flowgraph, BranchType, HighLevelILOperation
 
 from collections.abc import Mapping
 
-import db
-from dfil import DataNode, DataFlowEdge, TokenExpression
+try:
+    from . import db
+except ImportError:
+    import db
 
 try:
     from .dfil import *
@@ -841,6 +844,15 @@ class ILParser:
                         DataFlowILOperation.DFIL_UNKNOWN)
 
     def _var(self, var):
+
+        if isinstance(var, binaryninja.DataBuffer):
+            # Cast non-hashable DataBuffer objects to bytes()
+            var = bytes(var)
+        if not isinstance(var, typing.Hashable):
+            if verbosity >= 0:
+                print(f"Var not hashable: {repr(var)}")
+            var = repr(var)
+
         if var in self.varnodes:
             return self.varnodes[var]
 
@@ -1055,11 +1067,11 @@ def analyze_hlil_instruction(bv: binaryninja.BinaryView,
         print(f'Could not find instruction {ssa.instr_index} {ssa.expr_index}')
 
 
-def process_function(args,
-                     bv: binaryninja.BinaryView,
-                     fx: binaryninja.Function,
-                     output: Generator[None, dict, None],
-                     hlil: binaryninja.highlevelil.HighLevelILInstruction = None):
+def slice_function(args,
+                   bv: binaryninja.BinaryView,
+                   fx: binaryninja.Function,
+                   output: Generator[None, dict, None],
+                   hlil: binaryninja.highlevelil.HighLevelILInstruction = None):
     if not fx:
         print(f'Passed NULL function to process!')
         return
@@ -1131,7 +1143,7 @@ def handle_function(args,
     display = display_json()
     display.send(None)
 
-    process_function(args, bv, fx, display)
+    slice_function(args, bv, fx, display)
 
 
 def display_json():
@@ -1143,32 +1155,38 @@ def display_json():
         print("Iteration stopped")
 
 
-def handle_functions_by_name(args,
-                             bv: binaryninja.BinaryView,
-                             names: list[str],
-                             output: Generator[None, dict, None]):
+def slice_functions_by_name(args,
+                            bv: binaryninja.BinaryView,
+                            names: list[str],
+                            output: Generator[None, dict, None]):
     for fxname in names:
         funcs = bv.get_functions_by_name(fxname)
         funcs = [func for func in funcs if not func.is_thunk]
         assert (len(funcs) == 1)
         fx = funcs[0]
-        process_function(args, bv, fx, output)
+        slice_function(args, bv, fx, output)
 
 
-def _handle_binary(args,
-                   binary_path: str,
-                   output: Generator[None, dict, None]):
+def slice_binary_bv(args,
+                    bv: binaryninja.BinaryView,
+                    output: Generator[None, dict, None]):
+    if verbosity >= 2:
+        print(f'bv has {len(bv.functions)} functions')
+    if args.function:
+        slice_functions_by_name(args, bv, args.function, output)
+    else:
+        for fx_il in bv.hlil_functions(1024):
+            if verbosity >= 2:
+                print(f'Analyzing {fx}')
+            fx = fx_il.source_function
+            slice_function(args, bv, fx, output, hlil=fx_il)
+
+
+def _slice_binary(args,
+                  binary_path: str,
+                  output: Generator[None, dict, None]):
     with binaryninja.open_view(binary_path) as bv:
-        if verbosity >= 2:
-            print(f'bv has {len(bv.functions)} functions')
-        if args.function:
-            handle_functions_by_name(args, bv, args.function, output)
-        else:
-            for fx_il in bv.hlil_functions(100):
-                if verbosity >= 2:
-                    print(f'Analyzing {fx}')
-                fx = fx_il.source_function
-                process_function(args, bv, fx, output, hlil=fx_il)
+        slice_binary_bv(args, bv, output)
 
 
 class Logger:
@@ -1205,8 +1223,20 @@ def dump_slices(out_fd):
         # print("Iteration stopped")
 
 
+def get_slice_output(slices_dir, input_file_path, extension=SLICE_EXTENSION):
+    assert(slices_dir)
+    return os.path.join(slices_dir, os.path.basename(input_file_path) + extension)
+
+
+def get_detail_file_name(detail_path):
+    return detail_path.rstrip('/\\') + '.detail'
+
+
 class Main:
-    def __init__(self):
+    def __init__(self, args=None):
+
+        self.detail_file = None
+
         import argparse
 
         parser = argparse.ArgumentParser(description='Data flow slicing and match set analysis tool.')
@@ -1244,7 +1274,8 @@ class Main:
                              'physical cores.')
 
         search = parser.add_argument_group('Search command options')
-        search.add_argument('--detail', metavar='OUT_DIR', nargs=1,
+        search.add_argument('--detail',
+                            metavar='OUT_DIR',
                             default='match_set_detail',
                             help='Specify a folder to output detailed information on each slice in each match set.'
                             )
@@ -1254,7 +1285,12 @@ class Main:
         global files_processed
         global total_files
 
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(args)
+        self.args.search = self.args.command == "search"
+
+        verbosity = self.args.verbose
+        files_processed = Value('i', 0)
+        total_files = Value('i', 0)
 
         # This configures slicing.  Separate slices will be generated with each option set listed here.  They
         # are then deduplicated.
@@ -1264,10 +1300,10 @@ class Main:
             dict(removeInt=0x1000),
         ]
 
-        verbosity = self.args.verbose
-        files_processed = Value('i', 0)
-        total_files = Value('i', 0)
+        self.dbmain = None
 
+
+    def run(self):
         if self.args.command == "slice":
             if self.args.slices:
                 os.makedirs(self.args.slices, exist_ok=True)
@@ -1279,9 +1315,7 @@ class Main:
                     self.slice_binary(path)
 
         if self.args.command in ["ingest", "search"]:
-            self.args.search = self.args.command == "search"
-            db.DBMain(self.args)
-
+            self.dbmain = db.DBMain(self.args)
 
     def set_vars(self, processed, total):
         global files_processed
@@ -1290,10 +1324,17 @@ class Main:
         total_files = total
 
     def get_slice_output_path(self, input_path, extension):
-        return os.path.join(self.args.slices, os.path.basename(input_path) + extension)
+        return get_slice_output(self.args.slices, input_path, extension)
 
-    def _slice_binary(self, binary_path: str):
-        out_path = self.get_slice_output_path(binary_path, '.temp')
+    def _slice_binary(self, bv_or_path: str | binaryninja.BinaryView):
+        if isinstance(bv_or_path, binaryninja.BinaryView):
+            binary_path = bv_or_path.file.filename
+        else:
+            assert(isinstance(bv_or_path, str))
+            binary_path = bv_or_path
+
+
+        temp_path = self.get_slice_output_path(binary_path, '.temp')
         final_path = self.get_slice_output_path(binary_path, SLICE_EXTENSION)
 
         if verbosity >= 1:
@@ -1304,7 +1345,7 @@ class Main:
         if verbosity >= 2:
             print(f'Opening {binary_path}')
         if verbosity >= 2:
-            print(f'Output: {out_path}')
+            print(f'Output: {final_path}')
 
         if os.path.exists(final_path):
             if self.args.force_update:
@@ -1312,26 +1353,30 @@ class Main:
             else:
                 return
 
-        with open(out_path, 'wb') as fd:
+        with open(temp_path, 'wb') as fd:
             write_file = dump_slices(fd)
             write_file.send(None)
 
-            _handle_binary(self.args, binary_path, write_file)
+            if isinstance(bv_or_path, binaryninja.BinaryView):
+                slice_binary_bv(self.args, bv=bv_or_path, output=write_file)
+            else:
+                _slice_binary(self.args, binary_path, write_file)
 
-        os.replace(out_path, final_path)
+        os.replace(temp_path, final_path)
 
-    def slice_binary(self, binary_path: str):
+    def slice_binary(self, bv_or_path: str | binaryninja.BinaryView):
         try:
-            self._slice_binary(binary_path)
+            self._slice_binary(bv_or_path)
         except KeyboardInterrupt:
             sys.exit(0)
 
     def slice_binaries_serially(self, file_paths):
-        print("PROCESSING SERIALLY")
+        print("Slicing binaries one-at-a-time.  This can take a long time.")
         files_processed.value = 0
         total_files.value = len(file_paths)
 
         for idx, path in enumerate(file_paths):
+            print(f'Slicing {idx+1} of {len(file_paths)}: {path}')
             self.slice_binary(path)
 
     def slice_subprocess_queue_handler(self, paths: Queue, results: Queue, files_processed, total_files):
@@ -1391,4 +1436,4 @@ class Main:
 
 
 if __name__ == "__main__":
-    Main()
+    Main().run()

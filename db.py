@@ -209,10 +209,15 @@ class DBMain:
             self.summarize_match_sets(match_set_groups, last_n)
 
             if self.args.detail:
+                self.output_match_result_detail(self.get_detail_file_name(), match_results)
+
                 self.output_match_set_groups(self.args.detail, match_set_groups)
 
             all_results[filename] = match_results
         return all_results
+
+    def get_detail_file_name(self):
+        return self.args.detail.rstrip('/\\') + '.detail'
 
     def read_db_header(self):
         with open(self.args.db, 'rb') as fd:
@@ -237,7 +242,13 @@ class DBMain:
             groups.append((matchSetHash, fids, fileNames, group))
         return groups
 
+    def output_match_result_detail(self, output_file, match_results):
+        with open(output_file, 'wb') as fd:
+            for result in match_results:
+                cbor2.dump(result, fd)
+
     def output_match_set_groups(self, output_dir, match_set_groups):
+        print(f'output_dir is {output_dir}')
         os.makedirs(output_dir, exist_ok=True)
 
         def formatFuncAddress(funcAddress):
@@ -383,11 +394,12 @@ class DBMain:
                 dict(
                     funcName = line['function']['name'],
                     addressSet = sorted(line['addressSet'])
-                )
+                ) for _, line in group
             ]
 
             matchSetHash = md5(','.join(str(fid) for fid in fids).encode('ascii'))
 
+            print(f'allAddresses = {allAddresses}')
             result = dict(
                 hash=slice_hash,
                 canonicalText=group[0][1]['canonicalText'],

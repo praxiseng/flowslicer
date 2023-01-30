@@ -16,8 +16,12 @@ from binaryninja import flowgraph, BranchType, HighLevelILOperation
 
 from collections.abc import Mapping
 
-import db
-from dfil import DataNode, DataFlowEdge, TokenExpression
+try:
+    import db
+    from dfil import DataNode, DataFlowEdge, TokenExpression
+except ImportError:
+    import flowslicer.db as db
+    from flowslicer.dfil import DataNode, DataFlowEdge, TokenExpression
 
 try:
     from .dfil import *

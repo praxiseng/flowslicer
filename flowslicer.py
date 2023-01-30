@@ -1274,6 +1274,21 @@ class Main:
                              'its own, flowslicer.py has some serial portions that can be sped up by parallelism. ' +
                              'While this will vary per system, we suggest around 50%% and 75%% of the number of ' +
                              'physical cores.')
+        slicing.add_argument('--bn-int',
+                             metavar='SETTING',
+                             action='append',
+                             default=[],
+                             help='Set a BinaryNinja integer setting in the global scope.'
+                             )
+        slicing.add_argument('--bn-str',
+                             metavar='SETTING',
+                             action='append',
+                             default=[],
+                             help='Set a BinaryNinja string setting in the global scope.'
+                             )
+        slicing.add_argument('--bn-reset',
+                             action='store_true',
+                             help='Reset all Binary Ninja settings in the global scope.')
 
         search = parser.add_argument_group('Search command options')
         search.add_argument('--detail',
@@ -1290,6 +1305,8 @@ class Main:
         self.args = parser.parse_args(args)
         self.args.search = self.args.command == "search"
 
+        self.handle_binja_settings()
+
         verbosity = self.args.verbose
         files_processed = Value('i', 0)
         total_files = Value('i', 0)
@@ -1304,16 +1321,37 @@ class Main:
 
         self.dbmain = None
 
+    def handle_binja_settings(self):
+        bn_settings = binaryninja.settings.Settings()
+
+        if self.args.bn_reset:
+            bn_settings.reset_all()
+
+        for setting in self.args.bn_int:
+            key, value = setting.split('=')
+            bn_settings.set_integer(key, int(value))
+
+        for setting in self.args.bn_str:
+            key, value = setting.split('=', 1)
+            bn_settings.set_string(key, value)
+
+    def gen_paths(self, paths):
+        for path in self.args.files:
+            if not os.path.isdir(path):
+                yield path
+                continue
+
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    yield file_path
+
     def run(self):
         if self.args.command == "slice":
             if self.args.slices:
                 os.makedirs(self.args.slices, exist_ok=True)
-
-            for path in self.args.files:
-                if os.path.isdir(path):
-                    self.slice_binaries_in_folder(path)
-                else:
-                    self.slice_binary(path)
+            bin_paths = self.gen_paths(self.args.files)
+            self.slice_binaries(bin_paths)
 
         if self.args.command in ["ingest", "search"]:
             self.dbmain = db.DBMain(self.args)
@@ -1373,6 +1411,7 @@ class Main:
 
     def slice_binaries_serially(self, file_paths):
         print("Slicing binaries one-at-a-time.  This can take a long time.")
+        file_paths = list(file_paths)
         files_processed.value = 0
         total_files.value = len(file_paths)
 
@@ -1417,7 +1456,7 @@ class Main:
 
     def slice_binaries_in_parallel(self, file_paths):
         files_processed.value = 0
-        total_files.value = len(file_paths)
+        total_files.value = 0 # len(file_paths)
 
         pathQueue = Queue()
         self.exiting = False
@@ -1453,6 +1492,7 @@ class Main:
                         pass
 
             for _ in range(self.args.parallelism):
+                total_files.value += 1
                 pathQueue.put(None)
 
             for proc in procs:
@@ -1475,17 +1515,11 @@ class Main:
             sys.exit()
         self.exiting = True
 
-    def slice_binaries_in_folder(self, path):
-        file_paths = []
-        for root, dirs, files in os.walk(path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                file_paths.append(file_path)
-
+    def slice_binaries(self, bin_paths):
         if self.args.parallelism <= 1:
-            self.slice_binaries_serially(file_paths)
+            self.slice_binaries_serially(bin_paths)
         else:
-            self.slice_binaries_in_parallel(file_paths)
+            self.slice_binaries_in_parallel(bin_paths)
 
 
 if __name__ == "__main__":

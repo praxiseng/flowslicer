@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+import argparse
 import json
 import os.path
 import queue
@@ -1073,7 +1073,7 @@ def slice_function(args,
                    bv: binaryninja.BinaryView,
                    fx: binaryninja.Function,
                    output: Generator[None, dict, None],
-                   hlil: binaryninja.highlevelil.HighLevelILInstruction = None):
+                   hlil: binaryninja.highlevelil.HighLevelILFunction = None):
     if not fx:
         print(f'Passed NULL function to process!')
         return
@@ -1177,19 +1177,22 @@ def slice_binary_bv(args,
     if args.function:
         slice_functions_by_name(args, bv, args.function, output)
     else:
-        for fx_il in bv.hlil_functions(1024):
+        #for fx_il in bv.hlil_functions(1024):
+        #    fx = fx_il.source_function
+        for fx in bv.functions:
+            fx_il = fx.hlil
             if verbosity >= 2:
                 print(f'Analyzing {fx}')
-            fx = fx_il.source_function
             slice_function(args, bv, fx, output, hlil=fx_il)
 
 
 def _slice_binary(args,
                   binary_path: str,
                   output: Generator[None, dict, None]):
-    with binaryninja.open_view(binary_path) as bv:
-        slice_binary_bv(args, bv, output)
 
+    with binaryninja.open_view(binary_path) as bv:
+        bv.update_analysis_and_wait()
+        slice_binary_bv(args, bv, output)
 
 class Logger:
     def __init__(self, output_streams, current_file_path):
@@ -1229,10 +1232,23 @@ def get_slice_output(slices_dir, input_file_path, extension=SLICE_EXTENSION):
     assert(slices_dir)
     return os.path.join(slices_dir, os.path.basename(input_file_path) + extension)
 
+def get_bndb_output(bndb_dir, input_file_path):
+    assert(bndb_dir)
+    return os.path.join(bndb_dir, os.path.basename(input_file_path) + '.bndb')
+
 
 def get_detail_file_name(detail_path):
     return detail_path.rstrip('/\\') + '.detail'
 
+
+def str_to_bool(v):
+    if isinstance(v, bool):
+        return
+    if v.lower() in ['true', 'yes', 't', 'y', '1']:
+        return True
+    if v.lower() in ['false', 'no', 'f', 'n', '0']:
+        return False
+    raise argparse.ArgumentTypeError("Expected boolean value")
 
 class Main:
     def __init__(self, args=None):
@@ -1262,6 +1278,9 @@ class Main:
         slicing.add_argument('-s', '--slices',
                              default='data_flow_slices', metavar='SLICES_DIR', nargs='?',
                              help='Folder to place slice files and logs.  Defaults to "data_flow_slices".')
+        slicing.add_argument('-b', '--bndb',
+                             default='bndb_files', metavar='SLICES_DIR', nargs='?',
+                             help='Folder to place .bndb files to cache analysis.  Defaults to "bndb_files".')
 
         slicing.add_argument('-x', '--function',
                              metavar='NAME', action='append',
@@ -1269,6 +1288,10 @@ class Main:
         slicing.add_argument('-f', '--force-update', action='store_true', help=
                              f'Replace output {SLICE_EXTENSION} files if they already exist.'
                              )
+        slicing.add_argument('-u', '--update-bndb', action='store_true', help=
+                             f'Replace output .bndb files if they already exist.'
+                             )
+
         slicing.add_argument('-p', '--parallelism', metavar='N', type=int, default=1, help=
                              'Run N instances in parallel.  While Binary Ninja has some multithreading of ' +
                              'its own, flowslicer.py has some serial portions that can be sped up by parallelism. ' +
@@ -1285,6 +1308,12 @@ class Main:
                              action='append',
                              default=[],
                              help='Set a BinaryNinja string setting in the global scope.'
+                             )
+        slicing.add_argument('--bn-bool',
+                             metavar='SETTING',
+                             action='append',
+                             default=[],
+                             help='Set a BinaryNinja boolean setting in the global scope.'
                              )
         slicing.add_argument('--bn-reset',
                              action='store_true',
@@ -1335,6 +1364,10 @@ class Main:
             key, value = setting.split('=', 1)
             bn_settings.set_string(key, value)
 
+        for setting in self.args.bn_bool:
+            key, value = setting.split('=', 1)
+            bn_settings.set_bool(key, str_to_bool(value))
+
     def gen_paths(self, paths):
         for path in self.args.files:
             if not os.path.isdir(path):
@@ -1365,13 +1398,31 @@ class Main:
     def get_slice_output_path(self, input_path, extension):
         return get_slice_output(self.args.slices, input_path, extension)
 
+    def get_bndb_output_path(self, input_path):
+        return get_bndb_output(self.args.bndb, input_path)
+
+    def make_bndb(self, path):
+        if path.endswith('.bndb'):
+            return path
+
+        os.makedirs(self.args.bndb, exist_ok=True)
+        output_bndb = self.get_bndb_output_path(path)
+        if os.path.exists(output_bndb):
+            if self.args.update_bndb:
+                os.remove(output_bndb)
+            else:
+                return output_bndb
+        with binaryninja.open_view(path) as bv:
+            bv.update_analysis_and_wait()
+            bv.create_database(output_bndb)
+        return output_bndb
+
     def _slice_binary(self, bv_or_path: str | binaryninja.BinaryView):
         if isinstance(bv_or_path, binaryninja.BinaryView):
             binary_path = bv_or_path.file.filename
         else:
             assert(isinstance(bv_or_path, str))
             binary_path = bv_or_path
-
 
         temp_path = self.get_slice_output_path(binary_path, '.temp')
         final_path = self.get_slice_output_path(binary_path, SLICE_EXTENSION)
@@ -1399,6 +1450,7 @@ class Main:
             if isinstance(bv_or_path, binaryninja.BinaryView):
                 slice_binary_bv(self.args, bv=bv_or_path, output=write_file)
             else:
+                binary_path = self.make_bndb(binary_path)
                 _slice_binary(self.args, binary_path, write_file)
 
         os.replace(temp_path, final_path)

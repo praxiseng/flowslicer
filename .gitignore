@@ -7,3 +7,7 @@ match_set_detail/
 __pycache__/
 *.slicedb
 *.txt
+*.baseline
+*.other
+*.swp
+*.slices

@@ -16,8 +16,9 @@ from binaryninja import flowgraph, BranchType, HighLevelILOperation
 
 from collections.abc import Mapping
 
-import db
-from dfil import DataNode, DataFlowEdge, TokenExpression
+from src.util import status, format_5digit, format_4digit
+
+from . import db
 
 try:
     from .dfil import *
@@ -897,6 +898,8 @@ class ILParser:
                 # These will be at the highest level, so we don't need to worry about returning None as an operand
                 node = None
             case highlevelil.HighLevelILCase() as hlil_case:
+                if len(hlil_case.operands) != 1:
+                    print(f'HLIL_CASE operands {hlil_case.operands}')
                 assert (len(hlil_case.operands) == 1)
                 op1 = hlil_case.operands[0]
                 operands = [self._recurse(operand) for operand in op1]
@@ -917,7 +920,11 @@ class ILParser:
             case list():
                 operands = [self._recurse(operand) for operand in expr]
 
-                assert (all(operands))
+                if not all(operands):
+                    print(f'Operands are not all true: {operands}')
+                    operands = [o for o in operands if o is not None]
+
+                # assert (all(operands))
                 node = self._node(expr, operands)
             case binaryninja.lowlevelil.ILIntrinsic() as intrinsic:
                 iname = self._var(str(intrinsic.name))
@@ -1154,6 +1161,34 @@ def handle_functions_by_name(args,
         fx = funcs[0]
         process_function(args, bv, fx, output)
 
+def format_function_progress(n_functions, current_function, *args, **kwargs):
+    return f'{n_functions:5} functions {current_function:>5}'
+
+
+def handle_all_functions(args,
+                         bv: binaryninja.BinaryView,
+                         output: Generator[None, dict, None]):
+
+    n_functions = 0
+
+    status.start_process('Functions', format_function_progress, n_functions=0, current_function='')
+    for fx_il in bv.hlil_functions(100):
+        fx = fx_il.source_function
+        status.update('Functions', n_functions=n_functions, current_function=fx.name)
+        n_functions += 1
+        process_function(args, bv, fx, output, hlil=fx_il)
+    status.finish_process('Functions')
+
+def describe_functions(bv: binaryninja.BinaryView):
+    for fx in bv.functions:
+        simple_ranges = [[r.start, r.end] for r in fx.address_ranges]
+        print(f'fx {fx.start:6x} {fx.name:20} ranges={simple_ranges}')
+
+
+def open_view(path) -> binaryninja.BinaryView:
+    # Forward the function so that users do not need to import binaryninja
+    return binaryninja.open_view(path)
+
 
 def _handle_binary(args,
                    binary_path: str,
@@ -1164,12 +1199,7 @@ def _handle_binary(args,
         if args.function:
             handle_functions_by_name(args, bv, args.function, output)
         else:
-            for fx_il in bv.hlil_functions(100):
-                if verbosity >= 2:
-                    print(f'Analyzing {fx}')
-                fx = fx_il.source_function
-                process_function(args, bv, fx, output, hlil=fx_il)
-
+            handle_all_functions(args, bv, output)
 
 class Logger:
     def __init__(self, output_streams, current_file_path):
